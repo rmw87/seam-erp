@@ -1870,7 +1870,7 @@ function delCheque(id){
    INVENTORY MANAGEMENT  (stock ledger: received / issued / balance)
    ============================================================ */
 const INV_CATS=["Fabric","Trim","Packing","Accessories","Sample","Other"];
-function invBalance(it){ return Number(it.received||0)-Number(it.issued||0); }
+function invBalance(it){ return Number(it.received||0)-Number(it.issued||0)-Number(it.adjust||0); }
 function invValue(it){ return invBalance(it)*Number(it.unitPrice||0); }
 function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)<=r; }
 const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All",hideZero:true};
@@ -1958,7 +1958,7 @@ function exportInventory(){
   const data=rows.map(it=>({
     Code:it.code||"", GRN:it.grn||"", Date:it.date||"", Category:it.category||"",
     Supplier:it.supplier||"", Item:it.item||"", Colour:it.color||"", Unit:it.unit||"",
-    Received:Number(it.received||0), Issued:Number(it.issued||0), Balance:invBalance(it),
+    Received:Number(it.received||0), Issued:Number(it.issued||0), Adjustment:Number(it.adjust||0), Balance:invBalance(it),
     "Unit price":Number(it.unitPrice||0), Value:invValue(it),
     PO:it.po||"", Style:it.style||"", Invoice:it.invoice||"", "Reorder":Number(it.reorder||0), Remark:it.remark||""
   }));
@@ -2032,22 +2032,27 @@ async function handleInvExcel(file){
       invoice:col("INVOICE NUMBER","INVOICE"), supplier:col("SUPPLIER"), item:col("ITEM NAME","ITEM"),
       color:col("COLOR","COLOUR"), received:col("IN HOUSE YDS","INHOUSE YDS","IN HOUSE","RECEIVED"),
       price:col("UNIT PRICE","UNITPRICE"), issued:col("ISSUE YDS","ISSUED"), remark:col("REMARK"),
-      style:col("STYLE") };
+      style:col("STYLE"), balance:col("BALANCE YDS","BALANCE") };
     if(ci.code<0||ci.item<0) throw new Error("The sheet is missing a Code or Item column.");
     const num=v=>{ const n=Number(String(v==null?"":v).replace(/,/g,"")); return isNaN(n)?0:n; };
     const get=(row,k)=> (ci[k]>=0 && ci[k]<row.length)? row[ci[k]] : null;
-    const rows=[];
+    const rows=[]; let adjRows=0;
     for(let i=hr+1;i<grid.length;i++){
       const row=grid[i]||[]; const code=get(row,"code");
       if(code==null||String(code).trim()==="") continue;
       const item=get(row,"item");
       if((item==null||String(item).trim()==="")) continue;
+      const received=num(get(row,"received")), issued=num(get(row,"issued"));
+      // honour the sheet's own BALANCE YDS (wastage / factory-balance adjustment) if present
+      let adjust=0;
+      if(ci.balance>=0){ const bcell=get(row,"balance"); if(bcell!=null && String(bcell).trim()!==""){
+        const a=(received-issued)-num(bcell); if(Math.abs(a)>0.005){ adjust=Math.round(a*1000)/1000; adjRows++; }
+      }}
       rows.push({
         code:String(code).trim(), category:cat, date:xlDate(get(row,"date")),
         supplier:String(get(row,"supplier")||"").trim(), item:String(item).trim(),
         color:String(get(row,"color")||"").trim(), unit:(cat==="Fabric"?"yds":"pcs"),
-        received:num(get(row,"received")), issued:num(get(row,"issued")),
-        unitPrice:num(get(row,"price")), reorder:0,
+        received, issued, adjust, unitPrice:num(get(row,"price")), reorder:0,
         po:String(get(row,"po")||"").trim(), invoice:String(get(row,"invoice")||"").trim(),
         style:String(get(row,"style")||"").trim(), remark:String(get(row,"remark")||"").trim()
       });
@@ -2056,7 +2061,7 @@ async function handleInvExcel(file){
     // compute new vs update by code (within same category)
     const existing={}; (DB.inventory||[]).forEach(it=>{ if(it.code) existing[it.code.toLowerCase()]=it; });
     let upd=0,nw=0; rows.forEach(r=>{ existing[r.code.toLowerCase()]?upd++:nw++; });
-    INV_IMPORT={rows,newCount:nw,updCount:upd,category:cat,sheet:sheetName};
+    INV_IMPORT={rows,newCount:nw,updCount:upd,category:cat,sheet:sheetName,adjRows};
     reviewInvImport();
   }catch(e){
     $("#modal").className="modal";
@@ -2077,7 +2082,7 @@ function reviewInvImport(){
   $("#modal").innerHTML=`
     <div class="modal-head"><h3>Review import — ${esc(d.sheet)}</h3><div class="x" id="mx">×</div></div>
     <div class="modal-body">
-      <div class="notice" style="margin-top:0"><b>${d.rows.length}</b> rows read as <b>${esc(d.category)}</b> · <b>${d.newCount}</b> new item${d.newCount===1?"":"s"}, <b>${d.updCount}</b> will update existing (matched by code). Nothing is saved until you confirm.</div>
+      <div class="notice" style="margin-top:0"><b>${d.rows.length}</b> rows read as <b>${esc(d.category)}</b> · <b>${d.newCount}</b> new item${d.newCount===1?"":"s"}, <b>${d.updCount}</b> will update existing (matched by code).${d.adjRows?` <b>${d.adjRows}</b> use the sheet's own balance (wastage adjustment kept).`:""} Nothing is saved until you confirm.</div>
       <div style="overflow-x:auto"><table>
         <thead><tr><th>Code</th><th>Item</th><th>Colour</th><th>Supplier</th><th class="num">In-house</th><th class="num">Issued</th><th class="num">Unit price</th></tr></thead>
         <tbody>${sample}</tbody></table></div>
@@ -2115,6 +2120,7 @@ function editInv(id){
       {name:"unit",label:"Unit",type:"select",options:["yds","pcs","m","kg","roll","cone","set","USD"],half:true},
       {name:"received",label:"Received qty",type:"number",half:true,min:0},
       {name:"issued",label:"Issued qty (total)",type:"number",half:true,min:0},
+      {name:"adjust",label:"Adjustment / wastage",type:"number",step:"0.001",half:true},
       {name:"unitPrice",label:"Unit price (USD)",type:"number",step:"0.001",half:true,min:0},
       {name:"reorder",label:"Reorder level",type:"number",half:true,min:0},
       {name:"date",label:"In-house date",type:"date",half:true},
@@ -2125,8 +2131,8 @@ function editInv(id){
     ],
     onSubmit:async d=>{
       d.received=Math.max(0,Number(d.received||0)); d.issued=Math.max(0,Number(d.issued||0));
-      d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
-      if(d.issued>d.received){ toast("Issued can't exceed received — stock would go negative","warn"); return; }
+      d.adjust=Number(d.adjust||0); d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
+      if(d.received-d.issued-d.adjust < -0.0001){ toast("That leaves a negative balance — check issued / adjustment","warn"); return; }
       if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
       await save(); closeModal(); VIEWS.inventory(); toast(id?"Item updated":"Item added","ok");
     }});
