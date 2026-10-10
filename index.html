@@ -1587,12 +1587,37 @@ VIEWS.settings=function(){
         </div>
       </div></div>
     <div class="panel"><div class="panel-head"><h3>Recycle Bin</h3></div>
-      <div class="panel-pad"><div class="muted" style="font-size:13px">Deleted records are retained for 30 days, then auto-removed. Open the <span class="linklike" onclick="go('trash')">Recycle Bin</span> to restore or permanently delete.</div></div></div>`;
+      <div class="panel-pad"><div class="muted" style="font-size:13px">Deleted records are retained for 30 days, then auto-removed. Open the <span class="linklike" onclick="go('trash')">Recycle Bin</span> to restore or permanently delete.</div></div></div>
+
+    <div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
+      <div class="panel-pad">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
+          <div style="max-width:620px"><div class="strong">Clear all demo / sample data</div>
+            <div class="muted" style="font-size:13px;margin-top:3px">Removes every buyer, purchase order, material line, shipment, daily-production entry, inventory item, cheque record and the Recycle Bin — leaving an empty workspace for your real data. <b>User accounts and production lines are kept.</b> This cannot be undone, so export anything you need first.</div></div>
+          <button class="btn danger" onclick="clearAllData()">Clear all data</button>
+        </div>
+      </div></div>
+
+    <div class="panel"><div class="panel-head"><h3>Restore sample data</h3></div>
+      <div class="panel-pad">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
+          <div class="muted" style="font-size:13px;max-width:620px">Puts the original demo buyers, orders, shipments and inventory back (for testing). User accounts are kept.</div>
+          <button class="btn" onclick="doReset()">Load sample data</button>
+        </div>
+      </div></div>`;
 };
 async function toggleStaffDelete(){
   if(!DB.settings) DB.settings={};
   DB.settings.allowStaffDelete=!DB.settings.allowStaffDelete;
   await save(); VIEWS.settings(); toast("Setting saved","ok");
+}
+function clearAllData(){
+  if(!isAdmin()) return;
+  confirmModal("Clear all data","Delete every order, buyer, supplier, inventory item, production entry, shipment and cheque, leaving an empty workspace? User accounts and production lines are kept. This cannot be undone.",async()=>{
+    DB.buyers=[]; DB.suppliers=[]; DB.pos=[]; DB.bom=[]; DB.shipments=[];
+    DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[];
+    await save(); closeModal(); go("dashboard"); toast("All data cleared — workspace is empty","ok");
+  });
 }
 
 /* ============================================================
@@ -2483,7 +2508,7 @@ function renderUserChrome(){
       <div><div class="un">${esc(CURRENT.name||CURRENT.username)}</div>
       <div class="ur">${esc(CURRENT.role==="admin"?"Administrator":"Staff")}${CURRENT.twoFA?" · 2FA on":""}</div></div></div>
     ${FB_ON?`<div style="font-size:11px;color:#7fd8b0;margin-bottom:8px">☁ Shared database — on</div>`:""}
-    ${isAdmin()?`<button onclick="doReset()" style="margin-bottom:8px">Reset demo data</button>`:""}
+    ${isAdmin()?`<button onclick="go('settings')" style="margin-bottom:8px">Settings</button>`:""}
     <button onclick="doLogout()">Sign out</button>`;
 }
 function enterApp(){
