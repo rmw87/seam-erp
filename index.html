@@ -1,0 +1,2623 @@
+<!-- Garment Manufacturing ERP — single-file app. Workflow: Buyer PO -> BOM -> Raw Material Import -> Production -> Export. -->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seam — Garment Manufacturing ERP</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<!-- Shared database (optional). firebase-config.js fills window.FIREBASE_CONFIG when hosted. -->
+<script>window.FIREBASE_CONFIG = null;</script>
+<script src="firebase-config.js" onerror="void 0"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --bg:#EAEEF2; --surface:#FFFFFF; --surface-2:#F5F7FA;
+    --ink:#15213B; --ink-soft:#5C6779; --ink-faint:#8A93A3;
+    --line:#DCE2EA; --line-soft:#E9EDF2;
+    --denim:#2B4A7E; --denim-dark:#1E355C; --denim-deep:#16243F;
+    --chalk:#1F8C7E;        /* teal — done / received */
+    --thread:#C9781F;       /* amber — pending / attention */
+    --red:#BC4338; --amber:#B5811C; --green:#2A8A56; --blue:#2B6CB0;
+    --shadow:0 1px 2px rgba(21,33,59,.06), 0 6px 20px rgba(21,33,59,.05);
+    --radius:10px;
+    --mono:"SFMono-Regular",ui-monospace,"DejaVu Sans Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:var(--sans); color:var(--ink); background:var(--bg);
+    font-size:14px; line-height:1.45; -webkit-font-smoothing:antialiased;
+  }
+  body{display:grid; grid-template-columns:236px 1fr; grid-template-rows:100vh}
+
+  /* ---------- Sidebar ---------- */
+  .side{
+    background:linear-gradient(180deg,var(--denim-deep),#101b30);
+    color:#C7D0DE; display:flex; flex-direction:column; overflow:hidden;
+    border-right:1px solid #0c1426;
+  }
+  .brand{padding:20px 20px 16px; border-bottom:1px solid rgba(255,255,255,.07)}
+  .brand .mark{display:flex; align-items:center; gap:10px}
+  .brand .stitch{width:26px;height:26px;border:2px dashed #6E89BE;border-radius:6px;display:grid;place-items:center;color:#9FB6E0;font-weight:800;font-size:13px}
+  .brand h1{font-size:16px; letter-spacing:.08em; margin:0; color:#fff; font-weight:700; text-transform:uppercase}
+  .brand .sub{font-size:10.5px; letter-spacing:.22em; text-transform:uppercase; color:#7E8DA8; margin-top:3px}
+  nav{padding:10px 12px; overflow:auto; flex:1}
+  .nav-group{font-size:10px; letter-spacing:.18em; text-transform:uppercase; color:#647295; margin:16px 10px 6px}
+  .nav-item{display:flex; align-items:center; gap:11px; padding:9px 12px; border-radius:8px; cursor:pointer; color:#BCC6D6; font-weight:500; font-size:13.5px; user-select:none}
+  .nav-item .ico{width:18px; text-align:center; opacity:.85; font-size:15px}
+  .nav-item .badge{margin-left:auto; background:rgba(255,255,255,.08); color:#cdd6e4; font-size:11px; padding:1px 7px; border-radius:20px; font-variant-numeric:tabular-nums}
+  .nav-item:hover{background:rgba(255,255,255,.05); color:#fff}
+  .nav-item.active{background:var(--denim); color:#fff; box-shadow:inset 2px 0 0 #9FB6E0}
+  .nav-item.active .badge{background:rgba(255,255,255,.18)}
+  .side-foot{padding:12px 14px; border-top:1px solid rgba(255,255,255,.07); font-size:11px; color:#647295}
+  .side-foot button{background:none;border:1px solid rgba(255,255,255,.14);color:#aebbcf;border-radius:7px;padding:6px 10px;cursor:pointer;font-size:11.5px;width:100%;font-family:inherit}
+  .side-foot button:hover{border-color:#6E89BE;color:#fff}
+
+  /* ---------- Main ---------- */
+  .main{overflow:auto; display:flex; flex-direction:column}
+  .topbar{
+    position:sticky; top:0; z-index:5; background:rgba(234,238,242,.85); backdrop-filter:blur(8px);
+    padding:18px 28px 14px; border-bottom:1px solid var(--line);
+    display:flex; align-items:flex-end; gap:16px;
+  }
+  .topbar .eyebrow{font-size:10.5px; letter-spacing:.2em; text-transform:uppercase; color:var(--ink-faint); font-weight:600}
+  .topbar h2{margin:2px 0 0; font-size:22px; font-weight:700; letter-spacing:-.01em}
+  .topbar .seam{height:6px;margin-top:9px;border-bottom:2px dashed var(--line);}
+  .topbar .right{margin-left:auto; display:flex; gap:9px; align-items:center}
+  .content{padding:22px 28px 60px; max-width:1280px; width:100%}
+
+  /* ---------- Buttons / inputs ---------- */
+  .btn{font-family:inherit; font-size:13px; font-weight:600; border-radius:8px; padding:8px 14px; border:1px solid var(--line); background:var(--surface); color:var(--ink); cursor:pointer; display:inline-flex; gap:7px; align-items:center; white-space:nowrap}
+  .btn:hover{border-color:#c3ccd8}
+  .btn.primary{background:var(--denim); border-color:var(--denim-dark); color:#fff}
+  .btn.primary:hover{background:var(--denim-dark)}
+  .btn.ghost{background:transparent}
+  .btn.sm{padding:5px 10px; font-size:12px}
+  .btn.danger{color:var(--red); border-color:#e7c4c0}
+  .btn.danger:hover{background:#fbeeec}
+  input,select,textarea{font-family:inherit; font-size:13.5px; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%}
+  input:focus,select:focus,textarea:focus{outline:none; border-color:var(--denim); box-shadow:0 0 0 3px rgba(43,74,126,.12)}
+  label.fld{display:block; margin-bottom:12px}
+  label.fld .lab{display:block; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); font-weight:600; margin-bottom:5px}
+  .row2{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .row3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px}
+
+  /* ---------- Cards / KPIs ---------- */
+  .kpis{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:22px}
+  .kpi{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:16px 16px 15px; box-shadow:var(--shadow); position:relative; overflow:hidden}
+  .kpi::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--denim)}
+  .kpi.k-chalk::before{background:var(--chalk)} .kpi.k-thread::before{background:var(--thread)} .kpi.k-green::before{background:var(--green)}
+  .kpi .klab{font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-faint); font-weight:600}
+  .kpi .kval{font-size:27px; font-weight:700; margin-top:7px; letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+  .kpi .ksub{font-size:12px; color:var(--ink-soft); margin-top:3px}
+
+  .panel{background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); margin-bottom:20px; overflow:hidden}
+  .panel-head{display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line-soft)}
+  .panel-head h3{margin:0; font-size:14.5px; font-weight:700}
+  .panel-head .meta{font-size:12px; color:var(--ink-faint)}
+  .panel-head .actions{margin-left:auto; display:flex; gap:8px; align-items:center}
+  .panel-body{padding:6px 0}
+  .panel-pad{padding:18px}
+
+  /* ---------- Tables ---------- */
+  table{width:100%; border-collapse:collapse}
+  thead th{font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); font-weight:600; text-align:left; padding:10px 18px; border-bottom:1px solid var(--line-soft)}
+  tbody td{padding:11px 18px; border-bottom:1px solid var(--line-soft); vertical-align:middle; font-size:13.5px}
+  tbody tr:last-child td{border-bottom:none}
+  tbody tr:hover{background:var(--surface-2)}
+  td.num,th.num{text-align:right; font-variant-numeric:tabular-nums}
+  .mono{font-family:var(--mono); font-size:12.5px; letter-spacing:-.02em}
+  .muted{color:var(--ink-soft)}
+  .strong{font-weight:600}
+
+  /* ---------- Badges / status pills ---------- */
+  .pill{display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:20px; border:1px solid transparent; white-space:nowrap}
+  .pill .dot{width:7px;height:7px;border-radius:50%}
+  .p-grey{background:#eef1f5; color:#5a6477} .p-grey .dot{background:#9aa4b4}
+  .p-blue{background:#e7f0fa; color:#235e96} .p-blue .dot{background:#2b6cb0}
+  .p-amber{background:#fcf2e0; color:#94660f} .p-amber .dot{background:var(--thread)}
+  .p-teal{background:#e2f4f1; color:#15695e} .p-teal .dot{background:var(--chalk)}
+  .p-green{background:#e6f4ec; color:#1f6b41} .p-green .dot{background:var(--green)}
+  .p-red{background:#fbeae8; color:#9c362c} .p-red .dot{background:var(--red)}
+  .p-ink{background:var(--denim-deep); color:#e6ecf6} .p-ink .dot{background:#9FB6E0}
+
+  /* ---------- Production seam (signature) ---------- */
+  .seamtrack{display:flex; align-items:stretch; gap:0; margin:2px 0}
+  .seamtrack .seg{flex:1; text-align:center; position:relative; padding-top:14px}
+  .seamtrack .seg .node{width:13px;height:13px;border-radius:50%;border:2px solid var(--line); background:#fff; position:absolute; top:0; left:50%; transform:translateX(-50%); z-index:2}
+  .seamtrack .seg::before{content:""; position:absolute; top:6px; left:0; right:0; height:0; border-top:2px dashed var(--line); z-index:1}
+  .seamtrack .seg:first-child::before{left:50%}
+  .seamtrack .seg:last-child::before{right:50%}
+  .seamtrack .seg.done .node{background:var(--chalk); border-color:var(--chalk)}
+  .seamtrack .seg.done::before{border-top-style:solid; border-color:var(--chalk)}
+  .seamtrack .seg.active .node{border-color:var(--denim); background:#fff; box-shadow:0 0 0 3px rgba(43,74,126,.15)}
+  .seamtrack .seg .lab{font-size:10px; letter-spacing:.04em; text-transform:uppercase; color:var(--ink-soft); margin-top:3px; font-weight:600}
+  .seamtrack .seg .q{font-size:11px; color:var(--ink-faint); font-variant-numeric:tabular-nums}
+
+  .bar{height:7px; background:var(--line-soft); border-radius:20px; overflow:hidden}
+  .bar > i{display:block; height:100%; background:var(--denim); border-radius:20px}
+  .bar.teal > i{background:var(--chalk)}
+
+  /* ---------- Toolbar / search ---------- */
+  .toolbar{display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap}
+  .search{position:relative; flex:1; min-width:200px; max-width:340px}
+  .search input{padding-left:32px}
+  .search .ico{position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--ink-faint)}
+  .filterpills{display:flex; gap:6px; flex-wrap:wrap}
+  .fp{font-size:12px; font-weight:600; padding:6px 12px; border:1px solid var(--line); border-radius:20px; background:#fff; cursor:pointer; color:var(--ink-soft)}
+  .fp.on{background:var(--ink); border-color:var(--ink); color:#fff}
+
+  .empty{text-align:center; padding:46px 20px; color:var(--ink-soft)}
+  .empty .big{font-size:15px; font-weight:600; color:var(--ink); margin-bottom:5px}
+
+  /* ---------- Modal ---------- */
+  .scrim{position:fixed; inset:0; background:rgba(16,24,40,.45); backdrop-filter:blur(2px); display:none; z-index:50; align-items:flex-start; justify-content:center; padding:48px 18px; overflow:auto}
+  .scrim.open{display:flex}
+  .modal{background:var(--surface); border-radius:14px; width:100%; max-width:560px; box-shadow:0 24px 60px rgba(16,24,40,.32); animation:pop .14s ease}
+  .modal.wide{max-width:820px}
+  @keyframes pop{from{transform:translateY(8px) scale(.99); opacity:.6}to{transform:none; opacity:1}}
+  .modal-head{padding:18px 22px 12px; border-bottom:1px solid var(--line-soft); display:flex; align-items:center}
+  .modal-head h3{margin:0; font-size:17px; font-weight:700}
+  .modal-head .x{margin-left:auto; cursor:pointer; color:var(--ink-faint); font-size:20px; line-height:1; padding:4px}
+  .modal-body{padding:18px 22px; max-height:64vh; overflow:auto}
+  .modal-foot{padding:14px 22px; border-top:1px solid var(--line-soft); display:flex; gap:10px; justify-content:flex-end}
+
+  /* ---------- Toast ---------- */
+  .toasts{position:fixed; right:20px; bottom:20px; z-index:90; display:flex; flex-direction:column; gap:9px}
+  .toast{background:var(--ink); color:#fff; padding:11px 15px; border-radius:9px; font-size:13px; font-weight:500; box-shadow:0 10px 30px rgba(0,0,0,.25); display:flex; gap:9px; align-items:center; animation:slide .18s ease}
+  .toast.ok{background:#13433a} .toast.warn{background:#7a4a12} .toast.err{background:#6f2a23}
+  @keyframes slide{from{transform:translateX(12px); opacity:0}to{transform:none; opacity:1}}
+
+  .notice{background:#fff7e8; border:1px solid #f0d9a8; color:#7a5610; padding:9px 14px; border-radius:9px; font-size:12.5px; margin-bottom:16px}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+  .linklike{color:var(--denim); cursor:pointer; font-weight:600}
+  .linklike:hover{text-decoration:underline}
+  .tag{font-size:11px; background:var(--surface-2); border:1px solid var(--line); border-radius:6px; padding:2px 7px; color:var(--ink-soft); display:inline-block}
+  .right{margin-left:auto}
+  .stat-line{display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px dashed var(--line-soft); font-size:13px}
+  .stat-line:last-child{border-bottom:none}
+
+  @media (max-width:880px){
+    body{grid-template-columns:1fr; grid-template-rows:auto 1fr}
+    .side{flex-direction:row; overflow:auto; align-items:center; height:auto}
+    nav{display:flex; gap:4px; padding:8px}
+    .nav-group,.brand .sub{display:none}
+    .nav-item{padding:8px 10px; font-size:12px}
+    .side-foot{border:none; padding:6px 8px; display:flex; gap:6px; align-items:center}
+    .side-foot .userchip{display:none}
+    .side-foot button{width:auto; padding:6px 10px}
+    .kpis{grid-template-columns:1fr 1fr}
+    .grid2{grid-template-columns:1fr}
+    body{grid-template-rows:auto auto 1fr}
+  }
+
+  /* ---------- Import dropzone ---------- */
+  .dropzone{border:2px dashed var(--line); border-radius:12px; padding:34px 20px; text-align:center; background:var(--surface-2); transition:.15s; cursor:pointer}
+  .dropzone:hover,.dropzone.hot{border-color:var(--denim); background:#eef3fb}
+  .dropzone .big{font-size:15px; font-weight:700; margin:8px 0 4px}
+  .dropzone .sub{font-size:12.5px; color:var(--ink-soft)}
+  .dropglyph{font-size:30px; color:var(--denim)}
+  .dropoverlay{position:fixed; inset:0; z-index:80; background:rgba(22,36,63,.55); backdrop-filter:blur(3px); display:none; align-items:center; justify-content:center}
+  .dropoverlay.show{display:flex}
+  .dropoverlay .card{background:#fff; border-radius:16px; padding:40px 56px; text-align:center; border:3px dashed var(--denim); box-shadow:0 30px 70px rgba(0,0,0,.35)}
+  .dropoverlay .card .big{font-size:20px; font-weight:700; margin-top:10px}
+  .spinner{width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--denim);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 14px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .review-grid{display:grid; grid-template-columns:1fr 1fr; gap:10px 16px}
+  .review-grid .k{font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); font-weight:600}
+  .review-grid .v{font-size:14px; font-weight:600; margin-bottom:4px}
+  .matchip{display:inline-flex; gap:6px; align-items:center; font-size:12px; background:var(--surface-2); border:1px solid var(--line); border-radius:7px; padding:4px 9px; margin:0 6px 6px 0}
+
+  @media print{
+    .side,.topbar .right,.no-print{display:none !important}
+    body{display:block; background:#fff}
+    .main{overflow:visible}
+    .topbar{position:static; background:#fff; border:none; padding:0 0 8px}
+    .content{padding:0; max-width:none}
+    .panel{box-shadow:none; border:1px solid #bbb; break-inside:avoid}
+    .kpi{box-shadow:none}
+    thead th{color:#000}
+    @page{margin:14mm}
+  }
+
+  /* ---------- Auth / login ---------- */
+  .loginwrap{position:fixed; inset:0; z-index:100; display:none; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,#16243F,#0f1a2e 60%,#1E355C); padding:20px}
+  .loginwrap.show{display:flex}
+  .loginbox{background:#fff; border-radius:16px; width:100%; max-width:392px; padding:34px 34px 28px; box-shadow:0 30px 80px rgba(0,0,0,.45)}
+  .loginbox .lmark{display:flex; align-items:center; gap:11px; margin-bottom:22px}
+  .loginbox .lmark .stitch{width:34px;height:34px;border:2px dashed var(--denim);border-radius:8px;display:grid;place-items:center;color:var(--denim);font-weight:800}
+  .loginbox .lmark h1{margin:0;font-size:19px;letter-spacing:.06em;text-transform:uppercase;font-weight:700}
+  .loginbox .lmark .sub{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-faint)}
+  .loginbox h2{margin:0 0 4px;font-size:16px;font-weight:700}
+  .loginbox .lsub{color:var(--ink-soft);font-size:13px;margin-bottom:18px}
+  .loginerr{background:#fbeae8;border:1px solid #e7c4c0;color:#9c362c;font-size:12.5px;padding:9px 12px;border-radius:8px;margin-bottom:12px;display:none}
+  .loginerr.show{display:block}
+  .loginbox .btn.primary{width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:6px}
+  .loginhint{margin-top:16px;padding-top:14px;border-top:1px dashed var(--line-soft);font-size:12px;color:var(--ink-soft);text-align:center}
+  .loginhint code{background:var(--surface-2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-family:var(--mono);font-size:11.5px}
+  .authlink{display:block;text-align:center;margin-top:12px;font-size:12.5px;color:var(--denim);cursor:pointer;font-weight:600}
+  .authlink:hover{text-decoration:underline}
+  .codebox{font-family:var(--mono);font-size:19px;letter-spacing:.12em;text-align:center;background:var(--surface-2);border:1px dashed var(--denim);border-radius:10px;padding:16px;margin:12px 0;color:var(--ink);font-weight:700;word-break:break-all}
+  .qrwrap{display:flex;justify-content:center;padding:14px;background:#fff;border:1px solid var(--line);border-radius:12px;margin:10px auto;width:fit-content}
+  .qrwrap img,.qrwrap canvas,.qrwrap table{display:block}
+  .keyline{font-family:var(--mono);font-size:13px;background:var(--surface-2);border:1px solid var(--line);border-radius:8px;padding:9px 12px;text-align:center;letter-spacing:.06em;word-break:break-all}
+  .otpinput input{font-family:var(--mono);font-size:22px;letter-spacing:.5em;text-align:center;padding:12px}
+  .secbadge{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 8px;border-radius:20px}
+  .sb-on{background:#e6f4ec;color:#1f6b41} .sb-off{background:#eef1f5;color:#5a6477}
+
+  .userchip{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+  .avatar{width:30px;height:30px;border-radius:50%;background:var(--denim);color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px;flex:none}
+  .userchip .un{font-size:13px;color:#e6ecf6;font-weight:600;line-height:1.15}
+  .userchip .ur{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:#7E8DA8}
+  .rolepill{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:2px 7px;border-radius:20px}
+  .rp-admin{background:#3a2b12;color:#e8b04b} .rp-user{background:rgba(255,255,255,.1);color:#cdd6e4}
+
+  /* ---------- Cheque printing ---------- */
+  .cheque-stage{background:#e7ebf0;border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto}
+  .cheque-sheet{position:relative;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.16);transform-origin:top left;background-image:linear-gradient(rgba(43,74,126,.05) 1px,transparent 1px);background-size:100% 8mm}
+  .cheque-sheet .cf{position:absolute;font-family:Arial,Helvetica,sans-serif;color:#0b1e3a;cursor:move;user-select:none;white-space:pre-wrap;padding:0;border:1px dashed transparent;border-radius:2px}
+  .cheque-sheet .cf:hover{border-color:var(--denim);background:rgba(43,74,126,.05)}
+  .cheque-sheet .cf.sel{border-color:var(--denim)}
+  .fieldrow{display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line-soft)}
+  .fieldrow:last-child{border-bottom:none}
+  .fieldrow .fn{font-size:12.5px;font-weight:600}
+  .fieldrow input[type=number]{width:62px;padding:5px 6px;font-size:12px}
+  .miniio{width:66px !important}
+  #chequePrint{display:none}
+  #chequePrint .cf{position:absolute;font-family:Arial,Helvetica,sans-serif;color:#000;white-space:pre-wrap}
+  @media print{
+    body.cheque-print > *{display:none !important}
+    body.cheque-print #chequePrint{display:block !important;position:fixed;left:0;top:0}
+  }
+</style>
+
+<div class="side">
+  <div class="brand">
+    <div class="mark"><div class="stitch">S</div><div><h1>Seam</h1><div class="sub">Garment ERP</div></div></div>
+  </div>
+  <nav id="nav"></nav>
+  <div class="side-foot" id="sideFoot"></div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <div class="eyebrow" id="crumb">Overview</div>
+      <h2 id="title">Dashboard</h2>
+      <div class="seam"></div>
+    </div>
+    <div class="right" id="topActions"></div>
+  </div>
+  <div class="content" id="view"></div>
+</div>
+
+<div class="scrim" id="scrim"><div class="modal" id="modal"></div></div>
+<div class="toasts" id="toasts"></div>
+<div class="dropoverlay" id="dropOverlay"><div class="card"><div class="dropglyph">⤓</div><div class="big">Drop the purchase order PDF</div><div class="sub" style="margin-top:6px;color:#5C6779">Release to read and import the order</div></div></div>
+<div id="chequePrint"></div>
+
+<div class="loginwrap" id="authScreen"><div class="loginbox" id="authBox"></div></div>
+
+<script>
+"use strict";
+/* ============================================================
+   STORAGE LAYER  (window.storage → localStorage → in-memory)
+   ============================================================ */
+const DB_KEY = "garment_erp_db_v1";
+const SESSION_KEY = "garment_erp_session_v1";
+const HAS_STORE = (typeof window!=="undefined" && window.storage && typeof window.storage.get==="function");
+const HAS_LS = (function(){ try{ window.localStorage.setItem("__seam_t","1"); window.localStorage.removeItem("__seam_t"); return true; }catch(e){ return false; } })();
+let MEM = null;              // in-memory DB fallback
+let MEM_SESSION = null;      // in-memory session fallback
+let PERSIST_OK = HAS_STORE || HAS_LS;
+
+/* ---- Shared database (Firebase Firestore), enabled only when configured ---- */
+let FB_ON=false, FB_DOC=null, FB_SUBSCRIBED=false, lastJSON=null;
+function firebaseConfigured(){ return !!(window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.projectId); }
+function initFirebase(){
+  if(FB_ON) return true;
+  if(!firebaseConfigured() || typeof firebase==="undefined") return false;
+  try{
+    firebase.initializeApp(window.FIREBASE_CONFIG);
+    FB_DOC = firebase.firestore().collection("seam_erp").doc("workspace");
+    FB_ON = true; PERSIST_OK = true;
+    return true;
+  }catch(e){ console.error("Firebase init failed:", e); FB_ON=false; return false; }
+}
+function subscribeFirebase(){
+  if(!FB_ON || FB_SUBSCRIBED) return;
+  FB_SUBSCRIBED=true;
+  FB_DOC.onSnapshot(snap=>{
+    if(!snap.exists) return;
+    if(snap.metadata && snap.metadata.hasPendingWrites) return;   // ignore our own write echo
+    const d=snap.data(); if(!d||!d.json) return;
+    if(d.json===lastJSON) return;                                  // unchanged
+    lastJSON=d.json;
+    try{ DB=JSON.parse(d.json); }catch(e){ return; }
+    // keep the logged-in user object fresh so role/permission changes apply live
+    if(CURRENT){
+      const me=DB.users.find(u=>u.id===CURRENT.id);
+      if(me && me.active){ CURRENT=me; }
+      else { doLogout(); return; }
+    }
+    buildNav();
+    if(CURRENT && !$("#scrim").classList.contains("open") && VIEWS[ROUTE]){
+      if(!userCanSee(ROUTE)) go(ROUTE); else VIEWS[ROUTE]();  // live refresh / re-gate
+    }
+  }, err=>{ console.error("Firestore listen failed:", err); });
+}
+
+/* Prefer shared Firestore (when configured), else Claude's built-in storage,
+   else the browser's localStorage, else memory. Sessions stay per-device. */
+async function rawGet(key){
+  if(HAS_STORE){ try{ const r=await window.storage.get(key); if(r&&r.value!=null) return r.value; }catch(e){} }
+  if(HAS_LS){ try{ const v=window.localStorage.getItem(key); if(v!=null) return v; }catch(e){} }
+  return null;
+}
+async function rawSet(key,val){
+  if(HAS_STORE){ try{ await window.storage.set(key,val); PERSIST_OK=true; return true; }catch(e){} }
+  if(HAS_LS){ try{ window.localStorage.setItem(key,val); PERSIST_OK=true; return true; }catch(e){} }
+  PERSIST_OK=false; return false;
+}
+async function storeGet(){
+  if(FB_ON){
+    try{ const snap=await FB_DOC.get(); if(snap.exists){ const d=snap.data(); if(d&&d.json){ lastJSON=d.json; return JSON.parse(d.json); } } return null; }
+    catch(e){ console.error("Firestore read failed:", e); }
+  }
+  const v=await rawGet(DB_KEY); if(v!=null){ try{ return JSON.parse(v); }catch(e){} } return MEM;
+}
+async function storeSet(db){
+  const s=JSON.stringify(db);
+  if(FB_ON){
+    try{ await FB_DOC.set({json:s, updated:Date.now()}); lastJSON=s; PERSIST_OK=true; return; }
+    catch(e){ console.error("Firestore write failed:", e); }
+  }
+  const ok=await rawSet(DB_KEY, s); if(!ok) MEM=db;
+}
+async function sessionGet(){ const v=await rawGet(SESSION_KEY); if(v!=null){ try{ return JSON.parse(v); }catch(e){} } return MEM_SESSION; }
+async function sessionSet(v){ const ok=await rawSet(SESSION_KEY, JSON.stringify(v)); if(!ok) MEM_SESSION=v; }
+
+/* password hashing — SHA-256(salt:password), with a weak fallback if crypto.subtle is unavailable */
+function randSalt(){
+  if(window.crypto&&crypto.getRandomValues){ const a=new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a).map(b=>b.toString(16).padStart(2,"0")).join(""); }
+  return Math.random().toString(36).slice(2)+Date.now().toString(36);
+}
+async function hashPassword(pw, salt){
+  const data = salt+":"+pw;
+  if(window.crypto&&crypto.subtle){
+    try{
+      const buf=await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data));
+      return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+    }catch(e){/* fall through */}
+  }
+  // fallback (non-cryptographic) — only used if SubtleCrypto is missing
+  let h=5381; for(let i=0;i<data.length;i++){ h=((h<<5)+h+data.charCodeAt(i))>>>0; }
+  return "fb"+h.toString(16);
+}
+
+/* ---- recovery codes ---- */
+function generateRecoveryCode(){
+  const A="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars
+  const grp=()=>{ let s=""; const r=new Uint8Array(4); (window.crypto?crypto.getRandomValues(r):r.forEach((_,i)=>r[i]=Math.random()*256)); for(const b of r) s+=A[b%A.length]; return s; };
+  return grp()+"-"+grp()+"-"+grp()+"-"+grp();
+}
+
+/* ---- TOTP (RFC 6238) for Google Authenticator / Authy ---- */
+const B32="ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32Encode(bytes){ let bits=0,val=0,out=""; for(const b of bytes){ val=(val<<8)|b; bits+=8; while(bits>=5){ out+=B32[(val>>>(bits-5))&31]; bits-=5; } } if(bits>0) out+=B32[(val<<(5-bits))&31]; return out; }
+function base32Decode(s){ s=String(s).toUpperCase().replace(/=+$/,"").replace(/\s/g,""); let bits=0,val=0; const out=[]; for(const c of s){ const idx=B32.indexOf(c); if(idx<0) continue; val=(val<<5)|idx; bits+=5; if(bits>=8){ out.push((val>>>(bits-8))&0xff); bits-=8; } } return new Uint8Array(out); }
+function generateTOTPSecret(){ const a=new Uint8Array(20); (window.crypto?crypto.getRandomValues(a):a.forEach((_,i)=>a[i]=Math.random()*256)); return base32Encode(a); }
+async function hmacSha1(keyBytes, msgBytes){
+  const key=await crypto.subtle.importKey("raw",keyBytes,{name:"HMAC",hash:"SHA-1"},false,["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC",key,msgBytes));
+}
+async function totpAt(secretB32, ms){
+  const key=base32Decode(secretB32);
+  const counter=Math.floor((ms/1000)/30);
+  const buf=new ArrayBuffer(8); new DataView(buf).setUint32(4, counter>>>0);
+  const hm=await hmacSha1(key, new Uint8Array(buf));
+  const off=hm[hm.length-1]&0xf;
+  const bin=((hm[off]&0x7f)<<24)|((hm[off+1]&0xff)<<16)|((hm[off+2]&0xff)<<8)|(hm[off+3]&0xff);
+  return String(bin%1000000).padStart(6,"0");
+}
+async function verifyTOTP(secret, token, win=1){
+  token=String(token).replace(/\D/g,""); if(token.length!==6) return false;
+  if(!(window.crypto&&crypto.subtle)) return false;
+  const now=Date.now();
+  for(let e=-win;e<=win;e++){ if(await totpAt(secret, now+e*30000)===token) return true; }
+  return false;
+}
+function otpauthURI(user, secret){
+  const issuer="Seam ERP";
+  return `otpauth://totp/${encodeURIComponent(issuer)}:${encodeURIComponent(user)}?secret=${secret}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+}
+
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+const STAGES = ["Cutting","Sewing","Finishing","Quality Check","Packing"];
+const MAT_STATUS = ["Required","Ordered","In Transit","Received"];
+const PO_STATUS  = ["Draft","Confirmed","In Production","Ready to Ship","Shipped","Completed"];
+const SHIP_STATUS= ["Booked","In Transit","Delivered"];
+const SHIP_MODE  = ["Sea","Air"];
+
+/* ============================================================
+   STATE
+   ============================================================ */
+let DB = null;
+let ROUTE = "dashboard";
+let CURRENT = null;              // logged-in user
+const isAdmin = ()=> !!(CURRENT && CURRENT.role==="admin");
+const FILTERS = { po:"All", mat:"All", ship:"All" };
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>Array.from(r.querySelectorAll(s));
+const uid = (p="id")=> p+"_"+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function money(n,cur="USD"){ const v=Number(n||0); return (cur==="USD"?"$":cur+" ")+v.toLocaleString(undefined,{maximumFractionDigits:2}); }
+function num(n){ return Number(n||0).toLocaleString(); }
+function today(){ return new Date().toISOString().slice(0,10); }
+function fmtDate(d){ if(!d) return "—"; const t=new Date(d+"T00:00:00"); if(isNaN(t)) return d; return t.toLocaleDateString(undefined,{day:"2-digit",month:"short",year:"numeric"}); }
+function daysFromNow(d){ if(!d) return null; const ms=new Date(d+"T00:00:00")-new Date(today()+"T00:00:00"); return Math.round(ms/86400000); }
+
+const buyerName = id => (DB.buyers.find(b=>b.id===id)||{}).name || "—";
+const supplierName = id => (DB.suppliers.find(s=>s.id===id)||{}).name || "Unassigned";
+const poByNumber = id => DB.pos.find(p=>p.id===id);
+
+/* status -> pill class */
+function poPill(s){ return {Draft:"p-grey",Confirmed:"p-blue","In Production":"p-amber","Ready to Ship":"p-teal",Shipped:"p-ink",Completed:"p-green"}[s]||"p-grey"; }
+function matPill(s){ return {Required:"p-grey",Ordered:"p-blue","In Transit":"p-amber",Received:"p-teal"}[s]||"p-grey"; }
+function shipPill(s){ return {Booked:"p-blue","In Transit":"p-amber",Delivered:"p-green"}[s]||"p-grey"; }
+function pill(text,cls){ return `<span class="pill ${cls}"><span class="dot"></span>${esc(text)}</span>`; }
+
+/* ---- derived helpers ---- */
+function poValue(po){ return Number(po.quantity||0)*Number(po.unitPrice||0); }
+function bomFor(poId){ return DB.bom.filter(m=>m.poId===poId); }
+function materialProgress(poId){
+  const items=bomFor(poId); if(!items.length) return {pct:0,done:0,total:0};
+  const done=items.filter(m=>m.status==="Received").length;
+  return {pct:Math.round(done/items.length*100), done, total:items.length};
+}
+function productionProgress(po){
+  const prod=po.production||{}; const target=Number(po.quantity||0)||1;
+  let sum=0; STAGES.forEach(s=> sum+=Math.min(Number(prod[s]||0),target));
+  return Math.round((sum/(target*STAGES.length))*100);
+}
+function currentStage(po){
+  const prod=po.production||{}; const target=Number(po.quantity||0);
+  for(const s of STAGES){ if(Number(prod[s]||0) < target) return s; }
+  return "Complete";
+}
+function shipmentsFor(poId){ return DB.shipments.filter(s=>s.poId===poId); }
+function shippedQty(poId){ return shipmentsFor(poId).reduce((a,s)=>a+Number(s.qty||0),0); }
+
+/* ============================================================
+   SEED DATA  (tells the full workflow story)
+   ============================================================ */
+function seed(){
+  const b1=uid("buy"),b2=uid("buy"),b3=uid("buy");
+  const s1=uid("sup"),s2=uid("sup"),s3=uid("sup"),s4=uid("sup");
+  const p1=uid("po"),p2=uid("po"),p3=uid("po");
+  const mk=(poId,material,type,color,unit,qpg,qty,sup,cost,status,eta)=>(
+    {id:uid("bom"),poId,material,type,color,unit,qtyPerGarment:qpg,totalQty:qty,supplierId:sup,unitCost:cost,status,eta}
+  );
+  return {
+    meta:{created:today(), company:"Stitchline Garments (Pvt) Ltd"},
+    buyers:[
+      {id:b1,name:"Northwind Apparel",country:"United Kingdom",contact:"Emily Carter",email:"po@northwind.co.uk",terms:"FOB Colombo",address:"14 Carnaby St, London"},
+      {id:b2,name:"Lumen Fashion GmbH",country:"Germany",contact:"Jonas Vogel",email:"sourcing@lumen.de",terms:"CIF Hamburg",address:"Friedrichstr. 88, Berlin"},
+      {id:b3,name:"Coastline Retail",country:"United States",contact:"Maria Lopez",email:"buying@coastline.com",terms:"FOB Colombo",address:"500 Market St, San Francisco"},
+    ],
+    suppliers:[
+      {id:s1,name:"Dhaka Knit Mills",country:"Bangladesh",material:"Knit fabric",contact:"Rahim Uddin",email:"sales@dhakaknit.com"},
+      {id:s2,name:"Suzhou Woven Co.",country:"China",material:"Woven fabric",contact:"Li Wei",email:"export@suzhouwoven.cn"},
+      {id:s3,name:"Colombo Trims & Accessories",country:"Sri Lanka",material:"Trims & accessories",contact:"Nuwan Perera",email:"orders@colombotrims.lk"},
+      {id:s4,name:"Pacific Yarn Ltd",country:"India",material:"Yarn & thread",contact:"Anita Rao",email:"info@pacificyarn.in"},
+    ],
+    pos:[
+      {id:p1,poNumber:"PO-2406-NW",buyerId:b1,style:"NW-CREW-180",garment:"Crew-neck T-Shirt",fabric:"180gsm Cotton Jersey",
+       quantity:8000,unitPrice:4.25,currency:"USD",orderDate:"2026-05-12",deliveryDate:"2026-07-20",status:"In Production",
+       colors:"Navy, White, Heather Grey",sizes:"S–XXL",notes:"Side-seam label. AQL 2.5.",
+       production:{Cutting:8000,Sewing:6200,Finishing:3100,"Quality Check":1200,Packing:0}},
+      {id:p2,poNumber:"PO-2406-LM",buyerId:b2,style:"LM-POLO-220",garment:"Pique Polo Shirt",fabric:"220gsm Cotton Pique",
+       quantity:5000,unitPrice:7.90,currency:"USD",orderDate:"2026-05-28",deliveryDate:"2026-08-05",status:"Confirmed",
+       colors:"Black, Forest Green",sizes:"M–XXL",notes:"Tipped collar. Branded buttons.",
+       production:{Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0}},
+      {id:p3,poNumber:"PO-2405-CL",buyerId:b3,style:"CL-HOOD-330",garment:"Pullover Hoodie",fabric:"330gsm Fleece",
+       quantity:3500,unitPrice:12.40,currency:"USD",orderDate:"2026-04-20",deliveryDate:"2026-06-30",status:"Ready to Ship",
+       colors:"Charcoal, Sand",sizes:"S–XXL",notes:"Kangaroo pocket, metal drawcord tips.",
+       production:{Cutting:3500,Sewing:3500,Finishing:3500,"Quality Check":3500,Packing:3500}},
+    ],
+    bom:[
+      mk(p1,"Cotton Jersey 180gsm","Fabric","Navy/White/Grey","kg",0.22,1760,s1,3.10,"Received","2026-05-25"),
+      mk(p1,"Sewing thread (tex 24)","Thread","Matched","cone",0.02,160,s4,1.20,"Received","2026-05-22"),
+      mk(p1,"Woven neck label","Trim","Branded","pcs",1,8000,s3,0.04,"Received","2026-05-20"),
+      mk(p1,"Care label","Trim","Printed","pcs",1,8000,s3,0.02,"Received","2026-05-20"),
+      mk(p1,"Polybag + carton","Packaging","—","set",1,8000,s3,0.08,"In Transit","2026-06-29"),
+      mk(p2,"Cotton Pique 220gsm","Fabric","Black/Green","kg",0.30,1500,s1,3.40,"Ordered","2026-06-18"),
+      mk(p2,"Branded buttons","Trim","Custom","gross",0.04,200,s3,0.90,"Ordered","2026-06-22"),
+      mk(p2,"Collar tipping tape","Trim","Contrast","roll",0.01,50,s2,2.10,"Required",""),
+      mk(p2,"Sewing thread (tex 27)","Thread","Matched","cone",0.02,100,s4,1.25,"Required",""),
+      mk(p3,"Fleece 330gsm","Fabric","Charcoal/Sand","kg",0.55,1925,s1,3.80,"Received","2026-05-02"),
+      mk(p3,"Metal drawcord tips","Trim","Gunmetal","pcs",2,7000,s3,0.06,"Received","2026-05-05"),
+      mk(p3,"Drawcord","Trim","Matched","m",1.2,4200,s2,0.10,"Received","2026-05-05"),
+    ],
+    shipments:[
+      {id:uid("shp"),poId:p3,buyerId:b3,qty:2000,mode:"Sea",shipDate:"2026-06-22",eta:"2026-07-18",
+       portLoad:"Colombo",portDischarge:"Los Angeles",invoiceNo:"INV-CL-0419",blAwb:"MAEU-77310",status:"In Transit"},
+    ],
+    users:[],
+    lines:[{id:uid("ln"),name:"Production Line 1"},{id:uid("ln"),name:"Production Line 2"}],
+    daily:[],
+    trash:[],
+    settings:{allowStaffDelete:false},
+    cheques:[],
+    chequeLayout:defaultChequeLayout(),
+    inventory:seedInventory()
+  };
+}
+function seedInventory(){
+  const r=(category,code,date,supplier,item,color,unit,received,issued,unitPrice,reorder,remark,po)=>(
+    {id:uid("inv"),category,code,date,supplier,item,color,unit,received,issued,unitPrice,reorder:reorder||0,remark:remark||"",po:po||""});
+  return [
+    r("Fabric","SCF0002","2020-02-11","Imprima North America","100% Cotton Eyelet","White","yds",7207,7207,3.00,0,"BCI fabric","1045966"),
+    r("Fabric","SCF0013","2021-12-10","Creative Fabric","Solid HMC","Black","yds",4120,3600,1.17,800,"",""),
+    r("Fabric","SCF0017","2021-12-13","Creative Fabric","Printed ITY","Orange/Purple/Blue","yds",5983,2000,2.20,1000,"","1053142"),
+    r("Fabric","SCF0005","2019-09-12","Creative Fabric","Velvet Puff Glit","Black/Taupe/Gold","yds",724,724,2.93,0,"",""),
+    r("Trim","TRM-001","2026-01-10","Metro Buying","Gold Chain","Gold","yds",3500,0,0.52,5000,"Below reorder",""),
+    r("Trim","TRM-002","2026-01-10","Metro Buying","Metal Necklace NKC2015","Silver","pcs",520,120,3.00,200,"",""),
+    r("Trim","TRM-003","2026-02-02","Tat Fai Zipper","Closed End Zipper","Black","pcs",8000,5200,0.18,2000,"",""),
+    r("Trim","TRM-004","2026-01-22","Metro Buying","Grommet 52L","Gold","pcs",37800,30000,0.132,5000,"",""),
+    r("Packing","PKG-001","2026-02-15","Poly Bag","Poly Bag 19x63","—","pcs",540,0,0.02,1000,"Below reorder",""),
+    r("Packing","PKG-002","2026-02-15","Hang Tag","Hang Tag - Belk","—","pcs",3000,0,0.06,5000,"Below reorder",""),
+    r("Packing","PKG-003","2026-01-30","Carton","Carton 23x16x6","—","pcs",1200,300,0.65,500,"",""),
+    r("Accessories","ACC-001","2026-01-05","Hanger","Hanger #479 Black 19\"","Black","pcs",20000,0,0.097,25000,"Below reorder",""),
+    r("Accessories","ACC-002","2026-01-05","Black Crown","Sizer Black Crown","Black","pcs",15000,4000,0.116,3000,"",""),
+    r("Sample","SMP-676Q","2026-03-01","—","Body 676Q","—","pcs",70,0,8.73,0,"FOB sample",""),
+    r("Sample","SMP-739","2026-03-04","—","Body 739","—","pcs",29,0,5.93,0,"FOB sample",""),
+  ];
+}
+function defaultChequeLayout(){
+  return {
+    width:175, height:82, dateSpacing:0, figuresGuard:false,
+    currencyWord:"Rupees", centWord:"Cents", onlySuffix:true,
+    fields:{
+      date:{x:126,y:7,size:3.6,show:true},
+      payee:{x:24,y:19,size:3.8,width:120,show:true},
+      words:{x:8,y:28,size:3.4,width:158,lh:7,show:true},
+      figures:{x:150,y:28,size:3.8,show:true},
+      acpayee:{x:6,y:4,size:2.8,show:false},
+      memo:{x:10,y:64,size:2.8,width:80,show:false}
+    }
+  };
+}
+
+/* ============================================================
+   INIT
+   ============================================================ */
+async function initData(){
+  DB = await storeGet();
+  if(!DB || !DB.pos){ DB = seed(); await storeSet(DB); }
+  if(!DB.users) DB.users=[];
+  // migrate new collections for older workspaces
+  if(!DB.lines) DB.lines=[{id:uid("ln"),name:"Production Line 1"},{id:uid("ln"),name:"Production Line 2"}];
+  if(!DB.daily) DB.daily=[];
+  if(!DB.trash) DB.trash=[];
+  if(!DB.settings) DB.settings={allowStaffDelete:false};
+  if(!DB.cheques) DB.cheques=[];
+  if(!DB.chequeLayout) DB.chequeLayout=defaultChequeLayout();
+  if(!DB.inventory) DB.inventory=seedInventory();
+  // drop any throwaway default admin from older versions
+  DB.users = DB.users.filter(u=>!u.isDefault);
+  // auto-purge recycle bin items older than 30 days
+  const before=DB.trash.length;
+  const cutoff=Date.now()-30*86400000;
+  DB.trash=DB.trash.filter(t=>Number(t.deletedAt||0)>=cutoff);
+  if(DB.trash.length!==before) await storeSet(DB);
+}
+/* permissions */
+function canDelete(){ return isAdmin() || !!(DB.settings && DB.settings.allowStaffDelete); }
+
+/* ============================================================
+   RECYCLE BIN  (soft delete → restore, auto-purge after 30 days)
+   ============================================================ */
+const TRASH_LABEL={buyer:"Buyer",supplier:"Supplier",po:"Purchase order",shipment:"Shipment",daily:"Daily production",inventory:"Inventory item"};
+function trashPush(type,label,payload){
+  DB.trash.push({tid:uid("trash"),type,label,payload,deletedAt:Date.now(),deletedBy:CURRENT?CURRENT.username:""});
+}
+async function softDeleteBuyer(id){
+  const b=DB.buyers.find(x=>x.id===id); if(!b) return;
+  trashPush("buyer", b.name, {buyer:b});
+  DB.buyers=DB.buyers.filter(x=>x.id!==id); await save();
+}
+async function softDeleteSupplier(id){
+  const s=DB.suppliers.find(x=>x.id===id); if(!s) return;
+  trashPush("supplier", s.name, {supplier:s});
+  DB.bom.forEach(m=>{ if(m.supplierId===id) m.supplierId=""; });
+  DB.suppliers=DB.suppliers.filter(x=>x.id!==id); await save();
+}
+async function softDeletePO(id){
+  const p=DB.pos.find(x=>x.id===id); if(!p) return;
+  const bom=DB.bom.filter(m=>m.poId===id);
+  const ships=DB.shipments.filter(s=>s.poId===id);
+  const daily=DB.daily.filter(d=>d.poId===id);
+  trashPush("po", p.poNumber+" · "+p.garment, {po:p,bom,ships,daily});
+  DB.pos=DB.pos.filter(x=>x.id!==id);
+  DB.bom=DB.bom.filter(m=>m.poId!==id);
+  DB.shipments=DB.shipments.filter(s=>s.poId!==id);
+  DB.daily=DB.daily.filter(d=>d.poId!==id);
+  await save();
+}
+async function softDeleteShip(id){
+  const s=DB.shipments.find(x=>x.id===id); if(!s) return;
+  trashPush("shipment", (s.invoiceNo||"Shipment")+" · "+num(s.qty)+" pcs", {shipment:s});
+  DB.shipments=DB.shipments.filter(x=>x.id!==id); await save();
+}
+async function softDeleteDaily(id){
+  const d=DB.daily.find(x=>x.id===id); if(!d) return;
+  const po=poByNumber(d.poId);
+  trashPush("daily", fmtDate(d.date)+" · "+(po?po.poNumber:"?")+" · "+num(d.qty)+" pcs", {daily:d});
+  DB.daily=DB.daily.filter(x=>x.id!==id); await save();
+}
+async function softDeleteInventory(id){
+  const it=DB.inventory.find(x=>x.id===id); if(!it) return;
+  trashPush("inventory", (it.code?it.code+" · ":"")+it.item, {inventory:it});
+  DB.inventory=DB.inventory.filter(x=>x.id!==id); await save();
+}
+async function restoreTrash(tid){
+  const t=DB.trash.find(x=>x.tid===tid); if(!t) return;
+  const p=t.payload;
+  if(t.type==="buyer" && p.buyer) DB.buyers.push(p.buyer);
+  if(t.type==="supplier" && p.supplier) DB.suppliers.push(p.supplier);
+  if(t.type==="po" && p.po){ DB.pos.push(p.po); (p.bom||[]).forEach(m=>DB.bom.push(m)); (p.ships||[]).forEach(s=>DB.shipments.push(s)); (p.daily||[]).forEach(d=>DB.daily.push(d)); }
+  if(t.type==="shipment" && p.shipment) DB.shipments.push(p.shipment);
+  if(t.type==="daily" && p.daily) DB.daily.push(p.daily);
+  if(t.type==="inventory" && p.inventory) DB.inventory.push(p.inventory);
+  DB.trash=DB.trash.filter(x=>x.tid!==tid);
+  await save();
+}
+async function purgeTrash(tid){ DB.trash=DB.trash.filter(x=>x.tid!==tid); await save(); }
+async function save(){ await storeSet(DB); if(CURRENT) buildNav(); }
+
+/* setup is required until a real (secured) admin exists */
+function needsSetup(){ return !DB.users.some(u=>u.role==="admin" && u.active); }
+async function completeSetup(name, username, password){
+  const salt=randSalt();
+  const recovery=generateRecoveryCode();
+  const rsalt=randSalt();
+  const admin={id:uid("usr"),name,username,email:"",role:"admin",active:true,
+    salt,hash:await hashPassword(password,salt),
+    recoverySalt:rsalt,recoveryHash:await hashPassword(recovery,rsalt),
+    twoFA:false,totpSecret:"",created:today()};
+  DB.users.push(admin); CURRENT=admin;
+  await storeSet(DB); await sessionSet({userId:admin.id});
+  return recovery;
+}
+
+/* ============================================================
+   NAV + ROUTER
+   ============================================================ */
+const NAV = [
+  {grp:"Overview", items:[ {id:"dashboard",ico:"▦",label:"Dashboard"} ]},
+  {grp:"Sales", items:[
+    {id:"pos",ico:"▤",label:"Purchase Orders"},
+    {id:"buyers",ico:"◍",label:"Buyers"},
+  ]},
+  {grp:"Procurement", items:[
+    {id:"inventory",ico:"❒",label:"Inventory"},
+    {id:"materials",ico:"❑",label:"Raw Material & Import"},
+    {id:"suppliers",ico:"◎",label:"Suppliers"},
+  ]},
+  {grp:"Operations", items:[
+    {id:"daily",ico:"◪",label:"Daily Production"},
+    {id:"production",ico:"◫",label:"Production Stages"},
+    {id:"wip",ico:"▥",label:"WIP Report"},
+    {id:"export",ico:"➜",label:"Export & Shipment"},
+  ]},
+  {grp:"Finance", items:[
+    {id:"cheque",ico:"▭",label:"Cheque Printing"},
+  ]},
+  {grp:"Administration", admin:true, items:[
+    {id:"users",ico:"⚿",label:"Users"},
+    {id:"trash",ico:"♺",label:"Recycle Bin"},
+    {id:"settings",ico:"⚙",label:"Settings"},
+  ]},
+  {grp:"Account", items:[
+    {id:"account",ico:"◑",label:"My Account"},
+  ]},
+];
+function navBadge(id){
+  if(id==="pos") return DB.pos.filter(p=>p.status!=="Completed").length;
+  if(id==="materials") return DB.bom.filter(m=>m.status!=="Received").length;
+  if(id==="production") return DB.pos.filter(p=>["Confirmed","In Production"].includes(p.status)).length;
+  if(id==="export") return DB.shipments.filter(s=>s.status!=="Delivered").length;
+  if(id==="inventory") return (DB.inventory||[]).filter(invLow).length||null;
+  if(id==="trash") return (DB.trash&&DB.trash.length)||null;
+  return null;
+}
+/* which operational tabs a staff user may see (admins see all). undefined = all */
+const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","production","wip","export","cheque"];
+const ALWAYS_ALLOWED = ["account"];
+function userCanSee(route){
+  if(isAdmin()) return true;
+  if(ALWAYS_ALLOWED.includes(route)) return true;
+  if(ADMIN_ROUTES.includes(route)) return false;
+  const allowed = CURRENT && CURRENT.allowedTabs;
+  if(!allowed) return true;                 // no restriction set → sees all operational tabs
+  return allowed.includes(route);
+}
+function buildNav(){
+  const groups = NAV.filter(g=> !g.admin || isAdmin());
+  $("#nav").innerHTML = groups.map(g=>{
+    const items=g.items.filter(it=>userCanSee(it.id));
+    if(!items.length) return "";
+    return `<div class="nav-group">${g.grp}</div>`+
+    items.map(it=>{
+      const b=navBadge(it.id);
+      return `<div class="nav-item ${ROUTE===it.id?"active":""}" data-route="${it.id}">
+        <span class="ico">${it.ico}</span><span>${it.label}</span>${b?`<span class="badge">${b}</span>`:""}</div>`;
+    }).join("");
+  }).join("");
+  $$(".nav-item").forEach(n=> n.onclick=()=>go(n.dataset.route));
+}
+const ADMIN_ROUTES = ["users","trash","settings"];
+function go(route){
+  if(!CURRENT){ showLogin(); return; }
+  if(ADMIN_ROUTES.includes(route) && !isAdmin()){ toast("Administrators only","warn"); route="dashboard"; }
+  if(!userCanSee(route)){
+    // land on the first tab this user is allowed to see
+    const first=CONTROLLABLE_TABS.find(t=>userCanSee(t)) || "account";
+    route=first;
+  }
+  ROUTE=route; buildNav(); VIEWS[route] ? VIEWS[route]() : VIEWS.dashboard(); $(".main").scrollTo({top:0});
+}
+
+function setHead(crumb,title,actions=""){ $("#crumb").textContent=crumb; $("#title").textContent=title; $("#topActions").innerHTML=actions; }
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+function toast(msg,type=""){ 
+  const el=document.createElement("div"); el.className="toast "+type; el.textContent=msg;
+  $("#toasts").appendChild(el); setTimeout(()=>{el.style.opacity="0"; el.style.transition="opacity .25s"; setTimeout(()=>el.remove(),260);},2600);
+}
+
+/* ============================================================
+   MODAL + FORM ENGINE
+   ============================================================ */
+function closeModal(){ $("#scrim").classList.remove("open"); $("#modal").innerHTML=""; }
+$("#scrim").addEventListener("click",e=>{ if(e.target===$("#scrim")) closeModal(); });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeModal(); });
+
+function openModal({title,fields,record={},submitLabel="Save",onSubmit,wide=false}){
+  const html = fields.map(f=>fieldHTML(f, record[f.name])).join("");
+  $("#modal").className = "modal"+(wide?" wide":"");
+  $("#modal").innerHTML = `
+    <div class="modal-head"><h3>${esc(title)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><form id="mform" onsubmit="return false">${html}</form></div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="msave">${esc(submitLabel)}</button>
+    </div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#msave").onclick=()=>{
+    const data={}; let ok=true;
+    fields.forEach(f=>{
+      const el=$("#mform [name='"+f.name+"']"); if(!el) return;
+      let v = el.value;
+      if(f.type==="number") v = v===""?"":Number(v);
+      if(f.required && (v===""||v==null)){ el.style.borderColor="var(--red)"; ok=false; }
+      data[f.name]=v;
+    });
+    if(!ok){ toast("Please complete the required fields","warn"); return; }
+    onSubmit(data);
+  };
+  const first=$("#mform input,#mform select,#mform textarea"); if(first) first.focus();
+}
+function fieldHTML(f,val){
+  val = val==null?(f.default!=null?f.default:""):val;
+  const lab=`<span class="lab">${esc(f.label)}${f.required?" *":""}</span>`;
+  let ctrl="";
+  if(f.type==="select"){
+    ctrl=`<select name="${f.name}">${(f.options||[]).map(o=>{
+      const ov=typeof o==="object"?o.value:o, ol=typeof o==="object"?o.label:o;
+      return `<option value="${esc(ov)}" ${String(ov)===String(val)?"selected":""}>${esc(ol)}</option>`;
+    }).join("")}</select>`;
+  } else if(f.type==="textarea"){
+    ctrl=`<textarea name="${f.name}" rows="${f.rows||3}">${esc(val)}</textarea>`;
+  } else {
+    ctrl=`<input name="${f.name}" type="${f.type||"text"}" value="${esc(val)}" ${f.step?`step="${f.step}"`:""} ${f.placeholder?`placeholder="${esc(f.placeholder)}"`:""}>`;
+  }
+  return `<label class="fld" style="${f.half?"":"grid-column:1/-1"}">${lab}${ctrl}</label>`;
+}
+function confirmModal(title,body,onYes,danger=true){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${esc(title)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><p style="margin:4px 0 2px; color:var(--ink-soft); font-size:14px">${body}</p></div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+    <button class="btn ${danger?"danger":"primary"}" id="myes">${danger?"Delete":"Confirm"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#myes").onclick=()=>{ onYes(); };
+}
+
+/* helper select option lists */
+const buyerOpts = ()=> DB.buyers.map(b=>({value:b.id,label:b.name}));
+const supplierOpts = ()=> [{value:"",label:"Unassigned"}].concat(DB.suppliers.map(s=>({value:s.id,label:s.name})));
+const poOpts = ()=> DB.pos.map(p=>({value:p.id,label:p.poNumber+" · "+p.garment}));
+
+/* ============================================================
+   VIEWS
+   ============================================================ */
+const VIEWS = {};
+
+/* ---------- DASHBOARD ---------- */
+VIEWS.dashboard = function(){
+  setHead("Overview","Dashboard");
+  const active = DB.pos.filter(p=>!["Completed"].includes(p.status));
+  const orderValue = DB.pos.reduce((a,p)=>a+poValue(p),0);
+  const matPending = DB.bom.filter(m=>m.status!=="Received").length;
+  const inProd = DB.pos.filter(p=>p.status==="In Production")
+    .reduce((a,p)=>a+(Number(p.production?.Sewing||0)),0);
+  const ready = DB.pos.filter(p=>p.status==="Ready to Ship").reduce((a,p)=>a+Number(p.quantity||0),0);
+
+  // factory daily production
+  const lastDate = DB.daily.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
+  const lastQty = DB.daily.filter(e=>e.date===lastDate).reduce((a,e)=>a+Number(e.qty||0),0);
+  const mQty = DB.daily.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+Number(e.qty||0),0);
+  const mCM = DB.daily.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+dailyIncome(e),0);
+
+  const kpis = `
+  <div class="kpis">
+    <div class="kpi"><div class="klab">Active orders</div><div class="kval">${active.length}</div><div class="ksub">${money(orderValue)} total order value</div></div>
+    <div class="kpi k-thread"><div class="klab">Materials pending</div><div class="kval">${matPending}</div><div class="ksub">BOM lines not yet received</div></div>
+    <div class="kpi k-green"><div class="klab">Units in sewing</div><div class="kval">${num(inProd)}</div><div class="ksub">across active production</div></div>
+    <div class="kpi k-chalk"><div class="klab">Ready to ship</div><div class="kval">${num(ready)}</div><div class="ksub">units awaiting export</div></div>
+  </div>
+  <div class="kpis">
+    <div class="kpi k-chalk"><div class="klab">Last day production</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"no entries yet"}</div></div>
+    <div class="kpi"><div class="klab">This month production</div><div class="kval">${num(mQty)}</div><div class="ksub">pieces · ${thisMonth()}</div></div>
+    <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(mCM)}</div><div class="ksub">qty × CM price</div></div>
+    <div class="kpi k-thread"><div class="klab">Production lines</div><div class="kval">${DB.lines.length}</div><div class="ksub"><span class="linklike" onclick="go('daily')">open daily production</span></div></div>
+  </div>`;
+
+  const poRows = DB.pos.map(p=>{
+    const mp=materialProgress(p.id), pp=productionProgress(p);
+    return `<tr class="clk" data-po="${p.id}">
+      <td><div class="strong">${esc(p.poNumber)}</div><div class="muted" style="font-size:12px">${esc(p.garment)}</div></td>
+      <td>${esc(buyerName(p.buyerId))}</td>
+      <td>${poPillCell(p.status)}</td>
+      <td style="min-width:120px"><div class="bar teal"><i style="width:${mp.pct}%"></i></div><div class="muted" style="font-size:11px;margin-top:3px">${mp.done}/${mp.total} materials</div></td>
+      <td style="min-width:120px"><div class="bar"><i style="width:${pp}%"></i></div><div class="muted" style="font-size:11px;margin-top:3px">${pp}% · ${esc(currentStage(p))}</div></td>
+      <td class="num">${fmtDate(p.deliveryDate)}</td>
+    </tr>`;
+  }).join("");
+
+  const alerts = buildAlerts();
+
+  $("#view").innerHTML = kpis + `
+  <div class="grid2">
+    <div class="panel" style="grid-column:1/-1">
+      <div class="panel-head"><h3>Order pipeline</h3><div class="meta">${DB.pos.length} purchase orders</div>
+        <div class="actions"><button class="btn sm" onclick="go('pos')">Open orders</button></div></div>
+      <div class="panel-body"><table>
+        <thead><tr><th>PO / Style</th><th>Buyer</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
+        <tbody>${poRows}</tbody></table></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="panel"><div class="panel-head"><h3>Needs attention</h3></div>
+      <div class="panel-pad">${alerts}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Workflow</h3></div>
+      <div class="panel-pad">${workflowGuide()}</div></div>
+  </div>`;
+  $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
+};
+function poPillCell(s){ return pill(s, poPill(s)); }
+
+function buildAlerts(){
+  const items=[];
+  DB.bom.filter(m=>m.status==="In Transit"||m.status==="Ordered").forEach(m=>{
+    const d=daysFromNow(m.eta);
+    if(m.eta && d!=null && d<7){
+      const po=poByNumber(m.poId);
+      items.push({t:`${m.material} for ${po?po.poNumber:"?"} — ${m.status.toLowerCase()}, ETA ${fmtDate(m.eta)}`,cls:"p-amber"});
+    }
+  });
+  DB.bom.filter(m=>m.status==="Required").forEach(m=>{
+    const po=poByNumber(m.poId);
+    items.push({t:`${m.material} for ${po?po.poNumber:"?"} not yet ordered`,cls:"p-red"});
+  });
+  DB.pos.forEach(p=>{
+    const d=daysFromNow(p.deliveryDate);
+    if(d!=null && d<14 && !["Shipped","Completed"].includes(p.status)){
+      items.push({t:`${p.poNumber} delivery in ${d} day${d===1?"":"s"} — currently ${p.status}`,cls:d<5?"p-red":"p-amber"});
+    }
+  });
+  if(!items.length) return `<div class="muted" style="font-size:13px">All clear — no urgent material or delivery flags.</div>`;
+  return items.slice(0,8).map(i=>`<div class="stat-line"><span style="font-size:13px">${esc(i.t)}</span><span>${pill(i.cls==="p-red"?"urgent":"soon",i.cls)}</span></div>`).join("");
+}
+function workflowGuide(){
+  const steps=[["1","Receive buyer PO","Sales → Purchase Orders"],["2","Define Bill of Materials","Open a PO → Materials tab"],
+    ["3","Order & import raw material","Procurement → Raw Material & Import"],["4","Run production stages","Operations → Production"],
+    ["5","Export to buyer","Operations → Export & Shipment"]];
+  return steps.map(s=>`<div class="stat-line"><span><b style="color:var(--denim)">${s[0]}.</b> ${s[1]}</span><span class="muted" style="font-size:12px">${s[2]}</span></div>`).join("");
+}
+
+/* ---------- BUYERS ---------- */
+VIEWS.buyers = function(){
+  setHead("Sales","Buyers",`<button class="btn primary" onclick="editBuyer()">+ New buyer</button>`);
+  if(!DB.buyers.length){ return emptyState("No buyers yet","Add the brands and retailers you produce for.","editBuyer()"); }
+  const rows=DB.buyers.map(b=>{
+    const orders=DB.pos.filter(p=>p.buyerId===b.id);
+    const val=orders.reduce((a,p)=>a+poValue(p),0);
+    return `<tr>
+      <td><div class="strong">${esc(b.name)}</div><div class="muted" style="font-size:12px">${esc(b.country)}</div></td>
+      <td>${esc(b.contact||"—")}<div class="muted" style="font-size:12px">${esc(b.email||"")}</div></td>
+      <td>${esc(b.terms||"—")}</td>
+      <td class="num">${orders.length}</td>
+      <td class="num strong">${money(val)}</td>
+      <td class="num"><button class="btn sm" onclick="editBuyer('${b.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delBuyer('${b.id}')">Delete</button>`:""}</td>
+    </tr>`;
+  }).join("");
+  $("#view").innerHTML=`<div class="panel"><div class="panel-head"><h3>Buyers</h3><div class="meta">${DB.buyers.length} accounts</div></div>
+    <div class="panel-body"><table><thead><tr><th>Buyer</th><th>Contact</th><th>Terms</th><th class="num">Orders</th><th class="num">Value</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div></div>`;
+};
+function editBuyer(id){
+  const r = id?DB.buyers.find(b=>b.id===id):{};
+  openModal({title:id?"Edit buyer":"New buyer", record:r, submitLabel:id?"Save buyer":"Add buyer",
+    fields:[
+      {name:"name",label:"Buyer / brand name",required:true},
+      {name:"country",label:"Country",half:true},
+      {name:"contact",label:"Contact person",half:true},
+      {name:"email",label:"Email",type:"text",half:true},
+      {name:"terms",label:"Shipping terms",half:true,placeholder:"e.g. FOB Colombo"},
+      {name:"address",label:"Address",type:"textarea",rows:2},
+    ],
+    onSubmit:async d=>{
+      if(id){ Object.assign(r,d); } else { DB.buyers.push({id:uid("buy"),...d}); }
+      await save(); closeModal(); VIEWS.buyers(); toast(id?"Buyer updated":"Buyer added","ok");
+    }});
+}
+function delBuyer(id){
+  const used=DB.pos.some(p=>p.buyerId===id);
+  if(used){ toast("Can't delete — buyer has purchase orders","warn"); return; }
+  confirmModal("Delete buyer","This buyer moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteBuyer(id); closeModal(); VIEWS.buyers(); toast("Buyer moved to Recycle Bin","ok");
+  });
+}
+
+/* ---------- SUPPLIERS ---------- */
+VIEWS.suppliers=function(){
+  setHead("Procurement","Suppliers",`<button class="btn primary" onclick="editSupplier()">+ New supplier</button>`);
+  if(!DB.suppliers.length){ return emptyState("No suppliers yet","Add the mills and trim houses you import from.","editSupplier()"); }
+  const rows=DB.suppliers.map(s=>{
+    const lines=DB.bom.filter(m=>m.supplierId===s.id);
+    return `<tr>
+      <td><div class="strong">${esc(s.name)}</div><div class="muted" style="font-size:12px">${esc(s.country)}</div></td>
+      <td>${esc(s.material||"—")}</td>
+      <td>${esc(s.contact||"—")}<div class="muted" style="font-size:12px">${esc(s.email||"")}</div></td>
+      <td class="num">${lines.length} line${lines.length===1?"":"s"}</td>
+      <td class="num"><button class="btn sm" onclick="editSupplier('${s.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delSupplier('${s.id}')">Delete</button>`:""}</td>
+    </tr>`;
+  }).join("");
+  $("#view").innerHTML=`<div class="panel"><div class="panel-head"><h3>Suppliers</h3><div class="meta">${DB.suppliers.length} vendors</div></div>
+    <div class="panel-body"><table><thead><tr><th>Supplier</th><th>Supplies</th><th>Contact</th><th class="num">BOM lines</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div></div>`;
+};
+function editSupplier(id){
+  const r=id?DB.suppliers.find(s=>s.id===id):{};
+  openModal({title:id?"Edit supplier":"New supplier", record:r, submitLabel:id?"Save supplier":"Add supplier",
+    fields:[
+      {name:"name",label:"Supplier name",required:true},
+      {name:"country",label:"Country",half:true},
+      {name:"material",label:"Supplies",half:true,placeholder:"e.g. Knit fabric"},
+      {name:"contact",label:"Contact person",half:true},
+      {name:"email",label:"Email",half:true},
+    ],
+    onSubmit:async d=>{
+      if(id){ Object.assign(r,d); } else { DB.suppliers.push({id:uid("sup"),...d}); }
+      await save(); closeModal(); VIEWS.suppliers(); toast(id?"Supplier updated":"Supplier added","ok");
+    }});
+}
+function delSupplier(id){
+  confirmModal("Delete supplier","Moves to the Recycle Bin (kept 30 days). Linked material lines become Unassigned.",async()=>{
+    await softDeleteSupplier(id); closeModal(); VIEWS.suppliers(); toast("Supplier moved to Recycle Bin","ok");
+  });
+}
+
+/* ---------- PURCHASE ORDERS ---------- */
+VIEWS.pos=function(){
+  setHead("Sales","Purchase Orders",`<button class="btn" onclick="openImport()">⤓ Import PO (PDF)</button> <button class="btn primary" onclick="editPO()">+ New PO</button>`);
+  if(!DB.buyers.length){ return emptyState("Add a buyer first","Purchase orders are placed by buyers — create one to begin.","go('buyers')","Go to buyers"); }
+  const tabs=["All"].concat(PO_STATUS);
+  const filtered = DB.pos.filter(p=>FILTERS.po==="All"||p.status===FILTERS.po);
+  const rows = filtered.length?filtered.map(p=>{
+    const mp=materialProgress(p.id), pp=productionProgress(p);
+    return `<tr class="clk" data-po="${p.id}">
+      <td><div class="strong">${esc(p.poNumber)}</div><div class="muted" style="font-size:12px">${esc(p.style)} · ${esc(p.garment)}</div></td>
+      <td>${esc(buyerName(p.buyerId))}</td>
+      <td class="num">${num(p.quantity)}</td>
+      <td class="num">${money(poValue(p),p.currency)}</td>
+      <td>${poPillCell(p.status)}</td>
+      <td style="min-width:110px"><div class="bar teal"><i style="width:${mp.pct}%"></i></div></td>
+      <td style="min-width:110px"><div class="bar"><i style="width:${pp}%"></i></div></td>
+      <td class="num">${fmtDate(p.deliveryDate)}</td>
+    </tr>`;
+  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No orders in this status.</td></tr>`;
+  $("#view").innerHTML=`
+    <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.po===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
+    <div class="panel"><div class="panel-body"><table>
+      <thead><tr><th>PO / Style</th><th>Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+  $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.po=f.dataset.f; VIEWS.pos(); });
+  $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
+};
+function poFields(){
+  return [
+    {name:"poNumber",label:"PO number",required:true,half:true,placeholder:"PO-2406-XX"},
+    {name:"buyerId",label:"Buyer",type:"select",options:buyerOpts(),required:true,half:true},
+    {name:"style",label:"Style code",half:true,placeholder:"NW-CREW-180"},
+    {name:"garment",label:"Garment type",half:true,required:true,placeholder:"Crew-neck T-Shirt"},
+    {name:"fabric",label:"Main fabric",placeholder:"180gsm Cotton Jersey"},
+    {name:"quantity",label:"Quantity (pcs)",type:"number",required:true,half:true},
+    {name:"unitPrice",label:"Unit price",type:"number",step:"0.01",half:true},
+    {name:"currency",label:"Currency",type:"select",options:["USD","EUR","GBP"],half:true},
+    {name:"orderDate",label:"Order date",type:"date",half:true,default:today()},
+    {name:"deliveryDate",label:"Delivery date",type:"date",half:true},
+    {name:"status",label:"Status",type:"select",options:PO_STATUS,half:true},
+    {name:"colors",label:"Colours",half:true,placeholder:"Navy, White"},
+    {name:"sizes",label:"Size range",half:true,placeholder:"S–XXL"},
+    {name:"notes",label:"Notes / requirements",type:"textarea",rows:2},
+  ];
+}
+function editPO(id){
+  const r = id?DB.pos.find(p=>p.id===id):{currency:"USD",status:"Draft",orderDate:today()};
+  openModal({title:id?"Edit purchase order":"New purchase order", wide:true, record:r, submitLabel:id?"Save PO":"Create PO",
+    fields:poFields(),
+    onSubmit:async d=>{
+      if(id){ Object.assign(r,d); }
+      else { DB.pos.push({id:uid("po"),...d,production:{Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0}}); }
+      await save(); closeModal(); ROUTE==="pos"?VIEWS.pos():openPO(id||DB.pos[DB.pos.length-1].id);
+      toast(id?"PO updated":"PO created","ok");
+    }});
+}
+function delPO(id){
+  confirmModal("Delete purchase order","Moves the PO, its BOM, shipments and daily entries to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeletePO(id); closeModal(); go("pos"); toast("PO moved to Recycle Bin","ok");
+  });
+}
+
+/* ----- PO DETAIL (drill-down) ----- */
+function openPO(id){
+  const p=DB.pos.find(x=>x.id===id); if(!p) return;
+  ROUTE="pos"; buildNav();
+  setHead("Purchase Order", p.poNumber, `<button class="btn" onclick="go('pos')">← All orders</button> <button class="btn" onclick="editPO('${p.id}')">Edit PO</button>`);
+  const mp=materialProgress(p.id), pp=productionProgress(p), shipped=shippedQty(p.id);
+  const matRows = bomFor(p.id).map(m=>`
+    <tr><td class="strong">${esc(m.material)}</td><td>${esc(m.type)}</td>
+      <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
+      <td>${esc(supplierName(m.supplierId))}</td>
+      <td>${pill(m.status,matPill(m.status))}</td>
+      <td class="num">${m.eta?fmtDate(m.eta):"—"}</td>
+      <td class="num"><button class="btn sm" onclick="editBOM('${p.id}','${m.id}')">Edit</button></td></tr>`).join("")
+    || `<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No materials defined. Build the bill of materials to start procurement.</td></tr>`;
+
+  const seam = seamHTML(p);
+
+  $("#view").innerHTML = `
+  <div class="kpis">
+    <div class="kpi"><div class="klab">Order qty</div><div class="kval">${num(p.quantity)}</div><div class="ksub">${esc(p.colors||"")}</div></div>
+    <div class="kpi k-green"><div class="klab">Order value</div><div class="kval" style="font-size:23px">${money(poValue(p),p.currency)}</div><div class="ksub">@ ${money(p.unitPrice,p.currency)}/pc</div></div>
+    <div class="kpi k-thread"><div class="klab">Materials received</div><div class="kval">${mp.pct}%</div><div class="ksub">${mp.done}/${mp.total} lines</div></div>
+    <div class="kpi k-chalk"><div class="klab">Production</div><div class="kval">${pp}%</div><div class="ksub">${esc(currentStage(p))}</div></div>
+  </div>
+
+  <div class="panel"><div class="panel-head"><h3>Production seam</h3><div class="meta">${num(shipped)} / ${num(p.quantity)} shipped</div>
+    <div class="actions"><button class="btn sm" onclick="go('production')">Update production</button></div></div>
+    <div class="panel-pad">${seam}</div></div>
+
+  <div class="panel">
+    <div class="panel-head"><h3>Bill of Materials</h3><div class="meta">raw material required for this order</div>
+      <div class="actions"><button class="btn sm primary" onclick="editBOM('${p.id}')">+ Add material</button></div></div>
+    <div class="panel-body"><table>
+      <thead><tr><th>Material</th><th>Type</th><th class="num">Required</th><th>Supplier</th><th>Status</th><th class="num">ETA</th><th></th></tr></thead>
+      <tbody>${matRows}</tbody></table></div></div>
+
+  <div class="grid2">
+    <div class="panel"><div class="panel-head"><h3>Order details</h3></div><div class="panel-pad">
+      ${detailLine("Buyer",buyerName(p.buyerId))}
+      ${detailLine("Style",p.style)}
+      ${detailLine("Garment",p.garment)}
+      ${detailLine("Fabric",p.fabric)}
+      ${detailLine("Colours",p.colors)}
+      ${detailLine("Sizes",p.sizes)}
+      ${detailLine("Order date",fmtDate(p.orderDate))}
+      ${detailLine("Delivery (ETD)",fmtDate(p.deliveryDate))}
+      ${p.eta?detailLine("ETA",fmtDate(p.eta)):""}
+      ${p.shipVia?detailLine("Ship via",p.shipVia):""}
+      ${p.shipTerms?detailLine("Terms",p.shipTerms):""}
+      ${p.hts?detailLine("HTS",p.hts):""}
+      ${p.retail?detailLine("Retail / MSRP",money(p.retail,p.currency)):""}
+      ${detailLine("Status",PO_STATUS.includes(p.status)?p.status:"—")}
+      ${sizeBreakdownHTML(p)}
+      ${p.notes?`<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)"><div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px">Notes</div>${esc(p.notes)}</div>`:""}
+    </div></div>
+    <div class="panel"><div class="panel-head"><h3>Shipments</h3>
+      <div class="actions"><button class="btn sm" onclick="editShip(null,'${p.id}')">+ Book shipment</button></div></div>
+      <div class="panel-pad">${shipmentMini(p.id)}</div>
+      <div class="panel-pad" style="border-top:1px solid var(--line-soft)">
+        ${canDelete()?`<button class="btn danger sm" onclick="delPO('${p.id}')">Delete this purchase order</button>`:`<span class="muted" style="font-size:12px">Deletion is limited to administrators.</span>`}</div>
+    </div>
+  </div>`;
+}
+function detailLine(k,v){ return `<div class="stat-line"><span class="muted">${esc(k)}</span><span class="strong">${esc(v||"—")}</span></div>`; }
+function seamHTML(p){
+  const prod=p.production||{}; const cur=currentStage(p); const target=Number(p.quantity||0);
+  return `<div class="seamtrack">`+STAGES.map(s=>{
+    const q=Number(prod[s]||0); const done=q>=target&&target>0; const active=(s===cur);
+    return `<div class="seg ${done?"done":""} ${active?"active":""}"><div class="node"></div>
+      <div class="lab">${esc(s)}</div><div class="q">${num(q)}/${num(target)}</div></div>`;
+  }).join("")+`</div>`;
+}
+function shipmentMini(poId){
+  const list=shipmentsFor(poId);
+  if(!list.length) return `<div class="muted" style="font-size:13px">No shipments booked yet.</div>`;
+  return list.map(s=>`<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(s.qty)} pcs · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`).join("");
+}
+
+/* ----- BOM editor ----- */
+function editBOM(poId,id){
+  const list=bomFor(poId); const r=id?list.find(m=>m.id===id):{unit:"pcs",status:"Required"};
+  openModal({title:id?"Edit material line":"Add material to BOM", wide:true, record:r, submitLabel:id?"Save":"Add material",
+    fields:[
+      {name:"material",label:"Material",required:true,half:true,placeholder:"Cotton Jersey 180gsm"},
+      {name:"type",label:"Type",type:"select",options:["Fabric","Thread","Trim","Packaging","Other"],half:true},
+      {name:"color",label:"Colour / spec",half:true},
+      {name:"unit",label:"Unit",type:"select",options:["pcs","kg","m","yd","cone","roll","gross","set"],half:true},
+      {name:"qtyPerGarment",label:"Qty per garment",type:"number",step:"0.001",half:true},
+      {name:"totalQty",label:"Total required",type:"number",required:true,half:true},
+      {name:"supplierId",label:"Supplier",type:"select",options:supplierOpts(),half:true},
+      {name:"unitCost",label:"Unit cost",type:"number",step:"0.01",half:true},
+      {name:"status",label:"Procurement status",type:"select",options:MAT_STATUS,half:true},
+      {name:"eta",label:"ETA",type:"date",half:true},
+    ],
+    onSubmit:async d=>{
+      if(id){ Object.assign(r,d); } else { DB.bom.push({id:uid("bom"),poId,...d}); }
+      await save(); closeModal(); openPO(poId); toast(id?"Material updated":"Material added","ok");
+    }});
+}
+
+/* ---------- RAW MATERIAL & IMPORT ---------- */
+VIEWS.materials=function(){
+  setHead("Procurement","Raw Material & Import");
+  const tabs=["All"].concat(MAT_STATUS);
+  let rows = DB.bom.map(m=>({...m, po:poByNumber(m.poId)}));
+  if(FILTERS.mat!=="All") rows=rows.filter(m=>m.status===FILTERS.mat);
+  const totCost = DB.bom.reduce((a,m)=>a+Number(m.totalQty||0)*Number(m.unitCost||0),0);
+  const received = DB.bom.filter(m=>m.status==="Received").length;
+
+  const body = rows.length?rows.map(m=>`
+    <tr><td><div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
+      <td>${m.po?`<span class="linklike" onclick="openPO('${m.poId}')">${esc(m.po.poNumber)}</span>`:"—"}</td>
+      <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
+      <td>${esc(supplierName(m.supplierId))}</td>
+      <td class="num">${money(Number(m.totalQty||0)*Number(m.unitCost||0))}</td>
+      <td class="num">${m.eta?fmtDate(m.eta):"—"}</td>
+      <td>
+        <select onchange="setMatStatus('${m.id}',this.value)" style="width:130px;padding:5px 8px;font-size:12px">
+          ${MAT_STATUS.map(s=>`<option ${s===m.status?"selected":""}>${s}</option>`).join("")}
+        </select></td>
+      <td class="num"><button class="btn sm" onclick="editBOM('${m.poId}','${m.id}')">Edit</button></td></tr>`).join("")
+    : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No material lines in this status.</td></tr>`;
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Material lines</div><div class="kval">${DB.bom.length}</div><div class="ksub">across all orders</div></div>
+      <div class="kpi k-chalk"><div class="klab">Received</div><div class="kval">${received}</div><div class="ksub">cleared & in store</div></div>
+      <div class="kpi k-thread"><div class="klab">Open lines</div><div class="kval">${DB.bom.length-received}</div><div class="ksub">to order / in transit</div></div>
+      <div class="kpi k-green"><div class="klab">Material cost</div><div class="kval" style="font-size:22px">${money(totCost)}</div><div class="ksub">estimated landed</div></div>
+    </div>
+    <div class="notice">Update procurement status inline to move material through <b>Required → Ordered → In Transit → Received</b>. New material lines are added from inside each purchase order's Bill of Materials.</div>
+    <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.mat===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
+    <div class="panel"><div class="panel-body"><table>
+      <thead><tr><th>Material</th><th>PO</th><th class="num">Required</th><th>Supplier</th><th class="num">Est. cost</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
+      <tbody>${body}</tbody></table></div></div>`;
+  $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.mat=f.dataset.f; VIEWS.materials(); });
+};
+async function setMatStatus(id,val){
+  const m=DB.bom.find(x=>x.id===id); if(!m) return; m.status=val; await save();
+  toast("Material → "+val,"ok"); VIEWS.materials();
+}
+
+/* ---------- PRODUCTION ---------- */
+VIEWS.production=function(){
+  setHead("Operations","Production Stages");
+  const active=DB.pos.filter(p=>!["Draft","Completed"].includes(p.status));
+  if(!active.length){ return emptyState("Nothing in production","Confirm a purchase order to start tracking its production stages.","go('pos')","Open orders"); }
+  $("#view").innerHTML = active.map(p=>{
+    const pp=productionProgress(p); const target=Number(p.quantity||0);
+    const cells=STAGES.map(s=>{
+      const q=Number(p.production?.[s]||0);
+      return `<td class="num" style="min-width:96px">
+        <input type="number" value="${q}" min="0" max="${target}" style="width:84px;padding:6px 8px;font-size:13px"
+          onchange="setStage('${p.id}','${s}',this.value)"></td>`;
+    }).join("");
+    return `<div class="panel">
+      <div class="panel-head"><h3>${esc(p.poNumber)} · ${esc(p.garment)}</h3>
+        <div class="meta">${esc(buyerName(p.buyerId))} · target ${num(target)} pcs</div>
+        <div class="actions">${pill(p.status,poPill(p.status))}<button class="btn sm" onclick="openPO('${p.id}')">Open PO</button></div></div>
+      <div class="panel-pad">${seamHTML(p)}</div>
+      <div class="panel-body"><table>
+        <thead><tr>${STAGES.map(s=>`<th class="num">${esc(s)}</th>`).join("")}<th class="num">Progress</th></tr></thead>
+        <tbody><tr>${cells}<td class="num strong">${pp}%</td></tr></tbody></table></div>
+      <div class="panel-pad" style="border-top:1px solid var(--line-soft);display:flex;gap:8px;align-items:center">
+        <span class="muted" style="font-size:12.5px">Mark fully complete to move toward shipping:</span>
+        <button class="btn sm" onclick="fillStages('${p.id}')">Set all stages to ${num(target)}</button>
+      </div>
+    </div>`;
+  }).join("");
+};
+async function setStage(poId,stage,val){
+  const p=DB.pos.find(x=>x.id===poId); if(!p) return;
+  if(!p.production) p.production={};
+  p.production[stage]=Math.max(0,Number(val||0));
+  autoStatus(p); await save(); VIEWS.production();
+}
+async function fillStages(poId){
+  const p=DB.pos.find(x=>x.id===poId); if(!p) return;
+  STAGES.forEach(s=> p.production[s]=Number(p.quantity||0));
+  autoStatus(p); await save(); VIEWS.production(); toast("All stages complete — ready to ship","ok");
+}
+function autoStatus(p){
+  const target=Number(p.quantity||0); const prod=p.production||{};
+  const anyStarted=STAGES.some(s=>Number(prod[s]||0)>0);
+  const allDone=target>0 && STAGES.every(s=>Number(prod[s]||0)>=target);
+  if(["Shipped","Completed"].includes(p.status)) return;
+  if(allDone) p.status="Ready to Ship";
+  else if(anyStarted) p.status="In Production";
+  else if(p.status==="In Production") p.status="Confirmed";
+}
+
+/* ---------- EXPORT & SHIPMENT ---------- */
+VIEWS.export=function(){
+  setHead("Operations","Export & Shipment",`<button class="btn primary" onclick="editShip()">+ Book shipment</button>`);
+  const tabs=["All"].concat(SHIP_STATUS);
+  let list=DB.shipments.slice();
+  if(FILTERS.ship!=="All") list=list.filter(s=>s.status===FILTERS.ship);
+  const totalUnits=DB.shipments.reduce((a,s)=>a+Number(s.qty||0),0);
+  const inTransit=DB.shipments.filter(s=>s.status==="In Transit").length;
+  const ready=DB.pos.filter(p=>p.status==="Ready to Ship");
+
+  const readyBanner = ready.length?`<div class="notice"><b>${ready.length} order${ready.length===1?"":"s"} ready to ship:</b> ${ready.map(p=>`<span class="linklike" onclick="editShip(null,'${p.id}')">${esc(p.poNumber)}</span>`).join(", ")} — book an export shipment.</div>`:"";
+
+  const rows = list.length?list.map(s=>{
+    const po=poByNumber(s.poId);
+    return `<tr>
+      <td class="mono">${esc(s.invoiceNo||"—")}</td>
+      <td>${po?`<span class="linklike" onclick="openPO('${s.poId}')">${esc(po.poNumber)}</span>`:"—"}<div class="muted" style="font-size:12px">${esc(buyerName(s.buyerId))}</div></td>
+      <td class="num">${num(s.qty)}</td>
+      <td>${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad||"")} → ${esc(s.portDischarge||"")}</div></td>
+      <td class="num">${fmtDate(s.shipDate)}</td>
+      <td class="num">${fmtDate(s.eta)}</td>
+      <td>
+        <select onchange="setShipStatus('${s.id}',this.value)" style="width:130px;padding:5px 8px;font-size:12px">
+          ${SHIP_STATUS.map(x=>`<option ${x===s.status?"selected":""}>${x}</option>`).join("")}
+        </select></td>
+      <td class="num"><button class="btn sm" onclick="editShip('${s.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delShip('${s.id}')">Delete</button>`:""}</td></tr>`;
+  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No shipments in this status.</td></tr>`;
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Shipments</div><div class="kval">${DB.shipments.length}</div><div class="ksub">booked to date</div></div>
+      <div class="kpi k-thread"><div class="klab">In transit</div><div class="kval">${inTransit}</div><div class="ksub">on the water / in the air</div></div>
+      <div class="kpi k-chalk"><div class="klab">Units exported</div><div class="kval">${num(totalUnits)}</div><div class="ksub">total pieces shipped</div></div>
+      <div class="kpi k-green"><div class="klab">Ready to ship</div><div class="kval">${ready.length}</div><div class="ksub">orders awaiting export</div></div>
+    </div>
+    ${readyBanner}
+    <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.ship===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
+    <div class="panel"><div class="panel-body"><table>
+      <thead><tr><th>Invoice</th><th>PO / Buyer</th><th class="num">Qty</th><th>Mode / Route</th><th class="num">Shipped</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`;
+  $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.ship=f.dataset.f; VIEWS.export(); });
+};
+function editShip(id,presetPo){
+  const r = id?DB.shipments.find(s=>s.id===id):{mode:"Sea",status:"Booked",shipDate:today(),poId:presetPo||(DB.pos[0]&&DB.pos[0].id)};
+  if(r.poId && !r.buyerId){ const po=poByNumber(r.poId); if(po) r.buyerId=po.buyerId; }
+  openModal({title:id?"Edit shipment":"Book export shipment", wide:true, record:r, submitLabel:id?"Save shipment":"Book shipment",
+    fields:[
+      {name:"poId",label:"Purchase order",type:"select",options:poOpts(),required:true,half:true},
+      {name:"qty",label:"Quantity (pcs)",type:"number",required:true,half:true},
+      {name:"mode",label:"Mode",type:"select",options:SHIP_MODE,half:true},
+      {name:"status",label:"Status",type:"select",options:SHIP_STATUS,half:true},
+      {name:"shipDate",label:"Ship date",type:"date",half:true},
+      {name:"eta",label:"ETA",type:"date",half:true},
+      {name:"portLoad",label:"Port of loading",half:true,placeholder:"Colombo"},
+      {name:"portDischarge",label:"Port of discharge",half:true,placeholder:"Hamburg"},
+      {name:"invoiceNo",label:"Invoice no.",half:true},
+      {name:"blAwb",label:"B/L or AWB no.",half:true},
+    ],
+    onSubmit:async d=>{
+      const po=poByNumber(d.poId); d.buyerId=po?po.buyerId:"";
+      if(id){ Object.assign(r,d); } else { DB.shipments.push({id:uid("shp"),...d}); }
+      await save(); closeModal(); go("export");
+      toast(id?"Shipment updated":"Shipment booked","ok");
+    }});
+}
+async function setShipStatus(id,val){
+  const s=DB.shipments.find(x=>x.id===id); if(!s) return; s.status=val;
+  if(val==="Delivered"){ const po=poByNumber(s.poId); if(po && !["Completed"].includes(po.status)){
+    const shipped=shippedQty(po.id); if(shipped>=Number(po.quantity||0)) po.status="Completed"; else po.status="Shipped";
+  }}
+  await save(); toast("Shipment → "+val,"ok"); VIEWS.export();
+}
+function delShip(id){
+  confirmModal("Delete shipment","Moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteShip(id); closeModal(); VIEWS.export(); toast("Shipment moved to Recycle Bin","ok");
+  });
+}
+
+/* ============================================================
+   DAILY PRODUCTION  (line + date + PO → qty × CM = CM income)
+   ============================================================ */
+const lineName = id => (DB.lines.find(l=>l.id===id)||{}).name || "—";
+function monthKey(d){ return (d||"").slice(0,7); }        // YYYY-MM
+function thisMonth(){ return today().slice(0,7); }
+function cmMoney(n,cur){ return money(n,cur||"USD"); }
+function dailyIncome(e){ return Number(e.qty||0)*Number(e.cmPrice||0); }
+
+VIEWS.daily=function(){
+  const admin=isAdmin();
+  setHead("Operations","Daily Production",
+    `${admin?`<button class="btn" onclick="manageLines()">Manage lines</button> `:""}<button class="btn primary" onclick="editDaily()">+ Add production</button>`);
+  if(!DB.pos.length){ return emptyState("Add a purchase order first","Daily production is logged against an existing PO.","go('pos')","Open orders"); }
+
+  // filters
+  DAILY_FILTER.month = DAILY_FILTER.month || thisMonth();
+  const months = Array.from(new Set(DB.daily.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
+  if(!months.includes(DAILY_FILTER.month)) months.unshift(DAILY_FILTER.month);
+  let rows = DB.daily.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
+  rows = rows.filter(e=> monthKey(e.date)===DAILY_FILTER.month);
+  if(DAILY_FILTER.line!=="All") rows=rows.filter(e=>e.lineId===DAILY_FILTER.line);
+
+  // KPIs
+  const allMonth = DB.daily.filter(e=>monthKey(e.date)===DAILY_FILTER.month);
+  const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
+  const monthCM = allMonth.reduce((a,e)=>a+dailyIncome(e),0);
+  const lastDate = DB.daily.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
+  const lastQty = DB.daily.filter(e=>e.date===lastDate).reduce((a,e)=>a+Number(e.qty||0),0);
+
+  const body = rows.length?rows.map(e=>{
+    const po=poByNumber(e.poId);
+    return `<tr>
+      <td class="num">${fmtDate(e.date)}</td>
+      <td>${esc(lineName(e.lineId))}</td>
+      <td>${po?`<span class="linklike" onclick="openPO('${e.poId}')">${esc(po.poNumber)}</span>`:"—"}</td>
+      <td>${esc(e.style||(po?po.style:"")||"—")}</td>
+      <td class="num">${num(e.orderQty||(po?po.quantity:0))}</td>
+      <td class="num strong">${num(e.qty)}</td>
+      <td class="num">${cmMoney(e.cmPrice,e.currency)}</td>
+      <td class="num strong">${cmMoney(dailyIncome(e),e.currency)}</td>
+      <td class="num"><button class="btn sm" onclick="editDaily('${e.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delDaily('${e.id}')">Delete</button>`:""}</td></tr>`;
+  }).join("") : `<tr><td colspan="9" class="muted" style="text-align:center;padding:28px">No production entered for this month${DAILY_FILTER.line!=="All"?" on this line":""}.</td></tr>`;
+
+  // per-PO summary for the month
+  const byPo={};
+  allMonth.forEach(e=>{ const k=e.poId; if(!byPo[k]) byPo[k]={qty:0,cm:0}; byPo[k].qty+=Number(e.qty||0); byPo[k].cm+=dailyIncome(e); });
+  const poSummary=Object.entries(byPo).map(([pid,v])=>{ const po=poByNumber(pid); return `<div class="stat-line"><span>${po?esc(po.poNumber+" · "+po.garment):"—"}</span><span class="strong">${num(v.qty)} pcs · ${cmMoney(v.cm)}</span></div>`; }).join("") || `<div class="muted" style="font-size:13px">No entries yet.</div>`;
+
+  const lineTabs = `<div class="fp ${DAILY_FILTER.line==="All"?"on":""}" data-l="All">All lines</div>`+
+    DB.lines.map(l=>`<div class="fp ${DAILY_FILTER.line===l.id?"on":""}" data-l="${l.id}">${esc(l.name)}</div>`).join("");
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
+      <div class="kpi k-chalk"><div class="klab">This month output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${DAILY_FILTER.month}</div></div>
+      <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(monthCM)}</div><div class="ksub">qty × CM price</div></div>
+      <div class="kpi k-thread"><div class="klab">Entries</div><div class="kval">${allMonth.length}</div><div class="ksub">this month</div></div>
+    </div>
+    <div class="toolbar">
+      <select id="dmonth" style="max-width:150px">${months.map(m=>`<option ${m===DAILY_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <div class="filterpills">${lineTabs}</div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th></th></tr></thead>
+        <tbody>${body}</tbody></table></div></div>
+    <div class="panel"><div class="panel-head"><h3>Month summary by order</h3><div class="meta">${DAILY_FILTER.month}</div></div>
+      <div class="panel-pad">${poSummary}
+        <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthCM)}</span></div>
+      </div></div>`;
+  $("#dmonth").onchange=e=>{ DAILY_FILTER.month=e.target.value; VIEWS.daily(); };
+  $$(".fp").forEach(f=> f.onclick=()=>{ DAILY_FILTER.line=f.dataset.l; VIEWS.daily(); });
+};
+const DAILY_FILTER={month:"",line:"All"};
+
+function editDaily(id){
+  const e = id?DB.daily.find(x=>x.id===id):null;
+  const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${e&&e.poId===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  const lineOptions = DB.lines.map(l=>`<option value="${l.id}" ${e&&e.lineId===l.id?"selected":""}>${esc(l.name)}</option>`).join("");
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${id?"Edit production entry":"Add daily production"}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="row2">
+        <label class="fld"><span class="lab">Production line *</span><select id="d_line">${lineOptions}</select></label>
+        <label class="fld"><span class="lab">Date *</span><input id="d_date" type="date" value="${e?e.date:today()}"></label>
+      </div>
+      <label class="fld"><span class="lab">Purchase order *</span><select id="d_po"><option value="">— select PO —</option>${poOptions}</select></label>
+      <div id="d_poinfo" class="notice" style="display:none;margin-top:0"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Quantity made today *</span><input id="d_qty" type="number" min="0" value="${e?e.qty:""}" placeholder="pieces"></label>
+        <label class="fld"><span class="lab">CM price (per piece) *</span><input id="d_cm" type="number" step="0.01" min="0" value="${e?e.cmPrice:""}" placeholder="cut & make rate"></label>
+      </div>
+      <div class="panel-pad" style="background:var(--surface-2);border-radius:10px;display:flex;justify-content:space-between;align-items:center">
+        <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.08em">Daily CM income (auto)</span>
+        <span id="d_income" class="strong" style="font-size:20px;font-variant-numeric:tabular-nums">—</span>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="d_save">${id?"Save entry":"Add entry"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const poSel=$("#d_po"), infoBox=$("#d_poinfo");
+  function refreshPO(){
+    const po=poByNumber(poSel.value);
+    if(po){ infoBox.style.display="block"; infoBox.innerHTML=`<b>Style:</b> ${esc(po.style||"—")} &nbsp;·&nbsp; <b>Garment:</b> ${esc(po.garment)} &nbsp;·&nbsp; <b>Order qty:</b> ${num(po.quantity)} &nbsp;·&nbsp; <b>Currency:</b> ${esc(po.currency||"USD")}`; }
+    else { infoBox.style.display="none"; }
+    recalc();
+  }
+  function recalc(){
+    const q=Number($("#d_qty").value||0), cm=Number($("#d_cm").value||0);
+    const po=poByNumber(poSel.value);
+    $("#d_income").textContent=cmMoney(q*cm, po?po.currency:"USD");
+  }
+  poSel.onchange=refreshPO; $("#d_qty").oninput=recalc; $("#d_cm").oninput=recalc;
+  refreshPO();
+  $("#d_save").onclick=async()=>{
+    const lineId=$("#d_line").value, date=$("#d_date").value, poId=poSel.value;
+    const qty=Number($("#d_qty").value||0), cmPrice=Number($("#d_cm").value||0);
+    if(!lineId||!date||!poId){ toast("Line, date and PO are required","warn"); return; }
+    if(qty<=0){ toast("Enter the quantity made","warn"); return; }
+    const po=poByNumber(poId);
+    const rec={lineId,date,poId,qty,cmPrice,
+      style:po?po.style:"", orderQty:po?po.quantity:0, currency:po?po.currency:"USD",
+      cmIncome:qty*cmPrice};
+    if(id){ Object.assign(e,rec); }
+    else { DB.daily.push({id:uid("dp"),...rec,enteredBy:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
+    await save(); closeModal(); VIEWS.daily(); toast(id?"Entry updated":"Production added","ok");
+  };
+}
+function delDaily(id){
+  confirmModal("Delete entry","Moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteDaily(id); closeModal(); VIEWS.daily(); toast("Entry moved to Recycle Bin","ok");
+  });
+}
+/* ----- production lines management (admin) ----- */
+function manageLines(){
+  if(!isAdmin()) return;
+  const rows=DB.lines.map(l=>{
+    const used=DB.daily.some(d=>d.lineId===l.id);
+    return `<div class="stat-line"><span><input value="${esc(l.name)}" data-ln="${l.id}" style="width:220px;padding:6px 9px"></span>
+      <span><button class="btn sm danger" onclick="removeLine('${l.id}')" ${used?"disabled title='Has production entries'":""}>Remove</button></span></div>`;
+  }).join("");
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Production lines</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div id="lineList">${rows||`<div class="muted">No lines yet.</div>`}</div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <input id="newLine" placeholder="New line name (e.g. Production Line 3)" style="flex:1">
+        <button class="btn" id="addLine">Add</button>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button><button class="btn primary" id="saveLines">Save names</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#addLine").onclick=async()=>{
+    const v=$("#newLine").value.trim(); if(!v){ toast("Enter a line name","warn"); return; }
+    DB.lines.push({id:uid("ln"),name:v}); await save(); manageLines();
+  };
+  $("#saveLines").onclick=async()=>{
+    $$("#lineList input[data-ln]").forEach(inp=>{ const l=DB.lines.find(x=>x.id===inp.dataset.ln); if(l) l.name=inp.value.trim()||l.name; });
+    await save(); closeModal(); toast("Lines saved","ok"); if(ROUTE==="daily") VIEWS.daily();
+  };
+}
+async function removeLine(id){
+  if(DB.daily.some(d=>d.lineId===id)){ toast("Line has production entries — can't remove","warn"); return; }
+  DB.lines=DB.lines.filter(l=>l.id!==id); await save(); manageLines();
+}
+
+/* ============================================================
+   RECYCLE BIN VIEW  (admin)
+   ============================================================ */
+VIEWS.trash=function(){
+  if(!isAdmin()){ go("dashboard"); return; }
+  setHead("Administration","Recycle Bin");
+  const items=DB.trash.slice().sort((a,b)=>b.deletedAt-a.deletedAt);
+  const rows=items.length?items.map(t=>{
+    const daysLeft=Math.max(0, 30-Math.floor((Date.now()-t.deletedAt)/86400000));
+    return `<tr>
+      <td><span class="tag">${esc(TRASH_LABEL[t.type]||t.type)}</span></td>
+      <td class="strong">${esc(t.label||"—")}</td>
+      <td>${esc(t.deletedBy||"—")}</td>
+      <td class="num">${fmtDate(new Date(t.deletedAt).toISOString().slice(0,10))}</td>
+      <td class="num">${daysLeft} day${daysLeft===1?"":"s"}</td>
+      <td class="num"><button class="btn sm" onclick="doRestore('${t.tid}')">Restore</button>
+        <button class="btn sm danger" onclick="doPurge('${t.tid}')">Delete forever</button></td></tr>`;
+  }).join(""):`<tr><td colspan="6" class="muted" style="text-align:center;padding:34px">Recycle Bin is empty.</td></tr>`;
+  $("#view").innerHTML=`
+    <div class="notice">Deleted records are kept here for <b>30 days</b>, then removed automatically. Restore brings a record back to where it was.</div>
+    <div class="panel"><div class="panel-head"><h3>Deleted records</h3><div class="meta">${DB.trash.length} item${DB.trash.length===1?"":"s"}</div></div>
+      <div class="panel-body"><table>
+        <thead><tr><th>Type</th><th>Item</th><th>Deleted by</th><th class="num">Deleted</th><th class="num">Auto-removes in</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+};
+async function doRestore(tid){ await restoreTrash(tid); VIEWS.trash(); toast("Record restored","ok"); }
+function doPurge(tid){
+  confirmModal("Delete forever","This permanently removes the record. It cannot be undone.",async()=>{
+    await purgeTrash(tid); closeModal(); VIEWS.trash(); toast("Permanently deleted","ok");
+  });
+}
+
+/* ============================================================
+   SETTINGS  (admin)
+   ============================================================ */
+VIEWS.settings=function(){
+  if(!isAdmin()){ go("dashboard"); return; }
+  setHead("Administration","Settings");
+  const allow=!!(DB.settings&&DB.settings.allowStaffDelete);
+  $("#view").innerHTML=`
+    <div class="panel"><div class="panel-head"><h3>Permissions</h3></div>
+      <div class="panel-pad">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:16px">
+          <div><div class="strong">Allow staff to delete records</div>
+            <div class="muted" style="font-size:13px;margin-top:3px">When off, only administrators can delete buyers, orders, shipments and production entries. Deleted records always go to the Recycle Bin either way.</div></div>
+          <button class="btn ${allow?"primary":""}" onclick="toggleStaffDelete()">${allow?"On":"Off"}</button>
+        </div>
+      </div></div>
+    <div class="panel"><div class="panel-head"><h3>Recycle Bin</h3></div>
+      <div class="panel-pad"><div class="muted" style="font-size:13px">Deleted records are retained for 30 days, then auto-removed. Open the <span class="linklike" onclick="go('trash')">Recycle Bin</span> to restore or permanently delete.</div></div></div>`;
+};
+async function toggleStaffDelete(){
+  if(!DB.settings) DB.settings={};
+  DB.settings.allowStaffDelete=!DB.settings.allowStaffDelete;
+  await save(); VIEWS.settings(); toast("Setting saved","ok");
+}
+
+/* ============================================================
+   CHEQUE PRINTING  (amount → words, drag-to-align, print)
+   ============================================================ */
+const MM_PX = 3.7795275591;              // px per mm at 96dpi
+let CHEQUE = { payee:"", amount:"", date:today(), memo:"" };
+let CQ_SEL = null;                        // selected field key
+
+function numToWords(n){
+  n=Math.floor(Math.abs(Number(n)||0));
+  if(n===0) return "Zero";
+  const ones=["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine","Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen","Seventeen","Eighteen","Nineteen"];
+  const tens=["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  const three=num=>{ let s=""; const h=Math.floor(num/100), r=num%100;
+    if(h){ s+=ones[h]+" Hundred"; if(r) s+=" "; }
+    if(r){ if(r<20) s+=ones[r]; else { s+=tens[Math.floor(r/10)]; if(r%10) s+=" "+ones[r%10]; } }
+    return s; };
+  const scales=["","Thousand","Million","Billion","Trillion"];
+  const groups=[]; while(n>0){ groups.push(n%1000); n=Math.floor(n/1000); }
+  let words="";
+  for(let g=groups.length-1;g>=0;g--){ if(groups[g]) words+=(words?" ":"")+three(groups[g])+(scales[g]?" "+scales[g]:""); }
+  return words.trim();
+}
+function amountToWords(amount, curWord, centWord, only){
+  amount=Number(amount)||0;
+  const whole=Math.floor(amount), cents=Math.round((amount-whole)*100);
+  let s=numToWords(whole)+(curWord?" "+curWord:"");
+  if(cents>0) s+=" and "+numToWords(cents)+(centWord?" "+centWord:"");
+  if(only) s+=" Only";
+  return s;
+}
+function chequeFigures(amount){
+  const L=DB.chequeLayout;
+  const f=(Number(amount)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+  return (L.figuresGuard?"**":"")+f;
+}
+function chequeDateStr(d){
+  if(!d) return "";
+  const t=new Date(d+"T00:00:00"); if(isNaN(t)) return d;
+  const dd=String(t.getDate()).padStart(2,"0"), mm=String(t.getMonth()+1).padStart(2,"0"), yy=t.getFullYear();
+  return dd+"/"+mm+"/"+yy;
+}
+function chequeFieldsHTML(){
+  const L=DB.chequeLayout, D=CHEQUE;
+  const map={
+    date:chequeDateStr(D.date),
+    payee:D.payee||"",
+    words:amountToWords(D.amount||0,L.currencyWord,L.centWord,L.onlySuffix),
+    figures:chequeFigures(D.amount||0),
+    acpayee:"A/C PAYEE ONLY",
+    memo:D.memo||""
+  };
+  let html="";
+  Object.keys(L.fields).forEach(key=>{
+    const f=L.fields[key]; if(!f||f.show===false) return;
+    if((key==="memo"||key==="acpayee") && !map[key]) { if(key==="memo"&&!D.memo) return; }
+    const st=`left:${f.x}mm;top:${f.y}mm;font-size:${f.size}mm;`+
+      (f.width?`width:${f.width}mm;`:"")+(f.lh?`line-height:${f.lh}mm;`:"")+
+      (key==="date"&&L.dateSpacing?`letter-spacing:${L.dateSpacing}mm;`:"");
+    html+=`<div class="cf" data-field="${key}" style="${st}">${esc(map[key]||"")}</div>`;
+  });
+  return html;
+}
+function renderChequeSheets(){
+  const L=DB.chequeLayout;
+  const inner=chequeFieldsHTML();
+  const sheet=$("#chequeSheet");
+  if(sheet){
+    const stageW=Math.min(660, ($("#cqStage")? $("#cqStage").clientWidth-32 : 620));
+    const k=Math.min(1, stageW/(L.width*MM_PX));
+    sheet.style.width=L.width+"mm"; sheet.style.height=L.height+"mm";
+    sheet.style.transform="scale("+k+")";
+    sheet.dataset.k=k;
+    const stage=$("#cqStage"); if(stage){ stage.style.height=(L.height*MM_PX*k+2)+"px"; }
+    sheet.innerHTML=inner;
+    sheet.querySelectorAll(".cf").forEach(el=>{
+      if(el.dataset.field===CQ_SEL) el.classList.add("sel");
+      el.onpointerdown=e=>startFieldDrag(e, el, k);
+    });
+  }
+  const psheet=$("#chequePrintSheet");
+  if(psheet){ psheet.style.width=L.width+"mm"; psheet.style.height=L.height+"mm"; psheet.innerHTML=inner; }
+  else {
+    $("#chequePrint").innerHTML=`<div id="chequePrintSheet" style="position:relative;width:${L.width}mm;height:${L.height}mm">${inner}</div>`;
+  }
+}
+function startFieldDrag(e, el, k){
+  e.preventDefault();
+  const key=el.dataset.field, f=DB.chequeLayout.fields[key];
+  CQ_SEL=key; $$("#chequeSheet .cf").forEach(x=>x.classList.toggle("sel",x===el));
+  const sx=e.clientX, sy=e.clientY, ox=f.x, oy=f.y;
+  el.setPointerCapture(e.pointerId);
+  el.onpointermove=ev=>{
+    f.x=Math.max(0,Math.min(DB.chequeLayout.width,  ox+(ev.clientX-sx)/(k*MM_PX)));
+    f.y=Math.max(0,Math.min(DB.chequeLayout.height, oy+(ev.clientY-sy)/(k*MM_PX)));
+    el.style.left=f.x+"mm"; el.style.top=f.y+"mm";
+    syncFieldInputs(key);
+  };
+  el.onpointerup=ev=>{ el.onpointermove=null; el.onpointerup=null; try{el.releasePointerCapture(ev.pointerId);}catch(_){}
+    const ps=$("#chequePrintSheet"); if(ps) ps.innerHTML=chequeFieldsHTML(); };
+}
+function syncFieldInputs(key){
+  const f=DB.chequeLayout.fields[key];
+  const xi=$("#cqx_"+key), yi=$("#cqy_"+key);
+  if(xi) xi.value=Math.round(f.x*10)/10; if(yi) yi.value=Math.round(f.y*10)/10;
+}
+
+VIEWS.cheque=function(){
+  setHead("Finance","Cheque Printing");
+  const L=DB.chequeLayout, D=CHEQUE;
+  const wordsPreview=amountToWords(D.amount||0,L.currencyWord,L.centWord,L.onlySuffix);
+  const fieldRows=[
+    ["date","Date"],["payee","Payee"],["words","Amount in words"],["figures","Amount in figures"],
+    ["acpayee","A/C Payee crossing"],["memo","Memo"]
+  ].map(([key,label])=>{
+    const f=L.fields[key];
+    return `<div class="fieldrow">
+      <span class="fn">${label}</span>
+      <label style="font-size:11px;color:var(--ink-soft)">X<input type="number" class="miniio" id="cqx_${key}" value="${f.x}" step="0.5" onchange="setFieldPos('${key}','x',this.value)"></label>
+      <label style="font-size:11px;color:var(--ink-soft)">Y<input type="number" class="miniio" id="cqy_${key}" value="${f.y}" step="0.5" onchange="setFieldPos('${key}','y',this.value)"></label>
+      <label style="font-size:11px;color:var(--ink-soft)"><input type="checkbox" ${f.show!==false?"checked":""} onchange="setFieldShow('${key}',this.checked)"> show</label>
+    </div>`;
+  }).join("");
+
+  const recent=(DB.cheques||[]).slice(0,12).map(c=>`<div class="stat-line">
+    <span><span class="mono">${fmtDate(c.date)}</span> · ${esc(c.payee||"—")}<div class="muted" style="font-size:12px">${esc(c.words||"")}</div></span>
+    <span style="display:flex;gap:6px;align-items:center"><span class="strong">${esc(chequeFiguresFor(c))}</span>
+      <button class="btn sm" onclick="reprintCheque('${c.id}')">Load</button>
+      ${canDelete()?`<button class="btn sm danger" onclick="delCheque('${c.id}')">✕</button>`:""}</span></div>`).join("")
+    || `<div class="muted" style="font-size:13px">No cheques printed yet.</div>`;
+
+  $("#view").innerHTML=`
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Cheque details</h3></div>
+        <div class="panel-pad">
+          <label class="fld"><span class="lab">Pay to (payee)</span><input id="cq_payee" value="${esc(D.payee)}" placeholder="Name on the cheque"></label>
+          <div class="row2">
+            <label class="fld"><span class="lab">Amount</span><input id="cq_amount" type="number" step="0.01" min="0" value="${esc(D.amount)}" placeholder="0.00"></label>
+            <label class="fld"><span class="lab">Date</span><input id="cq_date" type="date" value="${esc(D.date)}"></label>
+          </div>
+          <div class="row3">
+            <label class="fld"><span class="lab">Currency word</span><input id="cq_cur" value="${esc(L.currencyWord)}" placeholder="Rupees"></label>
+            <label class="fld"><span class="lab">Cents word</span><input id="cq_cent" value="${esc(L.centWord)}" placeholder="Cents"></label>
+            <label class="fld"><span class="lab">Memo (optional)</span><input id="cq_memo" value="${esc(D.memo)}"></label>
+          </div>
+          <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;margin-bottom:10px">
+            <label><input type="checkbox" id="cq_only" ${L.onlySuffix?"checked":""}> add "Only"</label>
+            <label><input type="checkbox" id="cq_guard" ${L.figuresGuard?"checked":""}> guard figures with **</label>
+            <label><input type="checkbox" id="cq_ac" ${L.fields.acpayee.show?"checked":""}> A/C Payee crossing</label>
+          </div>
+          <div class="notice" style="margin:0"><b>In words:</b> <span id="cq_wordsview">${esc(wordsPreview)}</span></div>
+          <div style="display:flex;gap:9px;margin-top:14px;flex-wrap:wrap">
+            <button class="btn primary" onclick="printCheque()">🖨 Print cheque</button>
+            <button class="btn" onclick="saveChequeLayout()">Save layout</button>
+            <button class="btn ghost" onclick="resetChequeLayout()">Reset layout</button>
+          </div>
+        </div></div>
+
+      <div class="panel"><div class="panel-head"><h3>Alignment</h3><div class="meta">drag fields on the cheque, or type mm</div></div>
+        <div class="panel-pad">
+          <div class="row3" style="margin-bottom:10px">
+            <label class="fld" style="margin:0"><span class="lab">Cheque width (mm)</span><input type="number" id="cq_w" value="${L.width}" onchange="setChequeDim('width',this.value)"></label>
+            <label class="fld" style="margin:0"><span class="lab">Cheque height (mm)</span><input type="number" id="cq_h" value="${L.height}" onchange="setChequeDim('height',this.value)"></label>
+            <label class="fld" style="margin:0"><span class="lab">Date digit spacing</span><input type="number" id="cq_ds" step="0.5" value="${L.dateSpacing}" onchange="setChequeDim('dateSpacing',this.value)"></label>
+          </div>
+          ${fieldRows}
+          <div class="muted" style="font-size:12px;margin-top:8px">Selected field size: <input type="number" step="0.1" id="cq_size" style="width:64px;padding:4px 6px" value="${L.fields.payee.size}" onchange="setSelSize(this.value)"> mm — click a field first.</div>
+        </div></div>
+    </div>
+
+    <div class="panel"><div class="panel-head"><h3>Cheque preview</h3><div class="meta">${L.width} × ${L.height} mm · drag to position</div></div>
+      <div class="panel-pad"><div class="cheque-stage" id="cqStage"><div class="cheque-sheet" id="chequeSheet"></div></div>
+      <div class="muted" style="font-size:12px;margin-top:10px">Tip: load a blank cheque, print once on plain paper, hold it over the cheque against light, then nudge X/Y until every field lines up. Print at <b>100% / Actual size</b> with margins set to <b>None</b>.</div></div></div>
+
+    <div class="panel"><div class="panel-head"><h3>Recent cheques</h3><div class="meta">${(DB.cheques||[]).length} printed</div></div>
+      <div class="panel-pad">${recent}</div></div>`;
+
+  // wire inputs
+  const upd=()=>{ 
+    D.payee=$("#cq_payee").value; D.amount=$("#cq_amount").value; D.date=$("#cq_date").value; D.memo=$("#cq_memo").value;
+    L.currencyWord=$("#cq_cur").value; L.centWord=$("#cq_cent").value;
+    L.onlySuffix=$("#cq_only").checked; L.figuresGuard=$("#cq_guard").checked; L.fields.acpayee.show=$("#cq_ac").checked;
+    $("#cq_wordsview").textContent=amountToWords(D.amount||0,L.currencyWord,L.centWord,L.onlySuffix);
+    renderChequeSheets();
+  };
+  ["cq_payee","cq_amount","cq_date","cq_memo","cq_cur","cq_cent"].forEach(id=>{ $("#"+id).oninput=upd; });
+  ["cq_only","cq_guard","cq_ac"].forEach(id=>{ $("#"+id).onchange=upd; });
+  renderChequeSheets();
+};
+function chequeFiguresFor(c){ return (c.currencyWord?c.currencyWord+" ":"")+ (Number(c.amount)||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function setFieldPos(key,axis,v){ DB.chequeLayout.fields[key][axis]=Number(v)||0; renderChequeSheets(); }
+function setFieldShow(key,on){ DB.chequeLayout.fields[key].show=on; renderChequeSheets(); }
+function setChequeDim(k,v){ DB.chequeLayout[k]=Number(v)||0; if(ROUTE==="cheque") VIEWS.cheque(); }
+function setSelSize(v){ if(!CQ_SEL){ toast("Click a field in the preview first","warn"); return; } DB.chequeLayout.fields[CQ_SEL].size=Number(v)||3; renderChequeSheets(); }
+async function saveChequeLayout(){ await save(); toast("Cheque layout saved","ok"); }
+function resetChequeLayout(){
+  confirmModal("Reset cheque layout","Field positions and cheque size go back to defaults.",async()=>{
+    DB.chequeLayout=defaultChequeLayout(); await save(); closeModal(); VIEWS.cheque(); toast("Layout reset","ok");
+  },false);
+}
+function printCheque(){
+  const D=CHEQUE, L=DB.chequeLayout;
+  if(!D.payee || !(Number(D.amount)>0)){ toast("Enter a payee and amount first","warn"); return; }
+  renderChequeSheets();
+  let st=document.getElementById("chequePageStyle");
+  if(!st){ st=document.createElement("style"); st.id="chequePageStyle"; document.head.appendChild(st); }
+  st.textContent=`@page{ size:${L.width}mm ${L.height}mm; margin:0; }`;
+  // save to register
+  DB.cheques.unshift({id:uid("chq"),date:D.date,payee:D.payee,amount:Number(D.amount)||0,
+    words:amountToWords(D.amount||0,L.currencyWord,L.centWord,L.onlySuffix),
+    currencyWord:L.currencyWord, by:CURRENT?CURRENT.username:"", createdAt:Date.now()});
+  if(DB.cheques.length>200) DB.cheques=DB.cheques.slice(0,200);
+  save();
+  document.body.classList.add("cheque-print");
+  window.onafterprint=()=>{ document.body.classList.remove("cheque-print"); window.onafterprint=null; if(ROUTE==="cheque") VIEWS.cheque(); };
+  window.print();
+  setTimeout(()=>{ if(document.body.classList.contains("cheque-print")){ document.body.classList.remove("cheque-print"); } },1500);
+}
+function reprintCheque(id){
+  const c=(DB.cheques||[]).find(x=>x.id===id); if(!c) return;
+  CHEQUE={payee:c.payee,amount:c.amount,date:c.date,memo:""};
+  if(c.currencyWord) DB.chequeLayout.currencyWord=c.currencyWord;
+  VIEWS.cheque(); toast("Loaded — review then Print","ok");
+}
+function delCheque(id){
+  confirmModal("Remove cheque record","This removes it from the recent list.",async()=>{
+    DB.cheques=DB.cheques.filter(x=>x.id!==id); await save(); closeModal(); VIEWS.cheque(); toast("Removed","ok");
+  });
+}
+
+/* ============================================================
+   INVENTORY MANAGEMENT  (stock ledger: received / issued / balance)
+   ============================================================ */
+const INV_CATS=["Fabric","Trim","Packing","Accessories","Sample","Other"];
+function invBalance(it){ return Number(it.received||0)-Number(it.issued||0); }
+function invValue(it){ return invBalance(it)*Number(it.unitPrice||0); }
+function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)<=r; }
+const INV_FILTER={cat:"All",q:""};
+
+VIEWS.inventory=function(){
+  setHead("Procurement","Inventory",`<button class="btn primary" onclick="editInv()">+ Add item</button>`);
+  const all=DB.inventory||[];
+  const totalVal=all.reduce((a,it)=>a+invValue(it),0);
+  const fabricVal=all.filter(i=>i.category==="Fabric").reduce((a,it)=>a+invValue(it),0);
+  const accVal=all.filter(i=>["Trim","Packing","Accessories"].includes(i.category)).reduce((a,it)=>a+invValue(it),0);
+  const lowCount=all.filter(invLow).length;
+
+  let rows=all.slice();
+  if(INV_FILTER.cat!=="All") rows=rows.filter(i=>i.category===INV_FILTER.cat);
+  if(INV_FILTER.q){ const q=INV_FILTER.q.toLowerCase(); rows=rows.filter(i=>
+    (i.code||"").toLowerCase().includes(q)||(i.item||"").toLowerCase().includes(q)||
+    (i.supplier||"").toLowerCase().includes(q)||(i.color||"").toLowerCase().includes(q)); }
+  rows.sort((a,b)=>(a.category+a.item).localeCompare(b.category+b.item));
+
+  const body = rows.length?rows.map(it=>{
+    const bal=invBalance(it), low=invLow(it);
+    return `<tr>
+      <td class="mono">${esc(it.code||"—")}</td>
+      <td><div class="strong">${esc(it.item)}</div>${it.color&&it.color!=="—"?`<div class="muted" style="font-size:12px">${esc(it.color)}</div>`:""}</td>
+      <td>${pill(it.category,invCatPill(it.category))}</td>
+      <td>${esc(it.supplier||"—")}</td>
+      <td class="num">${num(it.received)}</td>
+      <td class="num">${num(it.issued)}</td>
+      <td class="num strong" style="${low?"color:var(--red)":""}">${num(bal)} <span class="muted" style="font-weight:400">${esc(it.unit||"")}</span>${low?' <span class="pill p-red" style="padding:1px 6px"><span class="dot"></span>low</span>':""}</td>
+      <td class="num">${money(it.unitPrice,"USD")}</td>
+      <td class="num strong" style="color:var(--chalk)">${money(invValue(it))}</td>
+      <td class="num"><button class="btn sm" onclick="issueInv('${it.id}')">Issue</button>
+        <button class="btn sm" onclick="editInv('${it.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delInv('${it.id}')">Del</button>`:""}</td></tr>`;
+  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No items${INV_FILTER.cat!=="All"?" in "+INV_FILTER.cat:""}.</td></tr>`;
+
+  const catTabs=["All"].concat(INV_CATS).map(c=>`<div class="fp ${INV_FILTER.cat===c?"on":""}" data-c="${c}">${c}</div>`).join("");
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Stock value (bal × price)</div><div class="kval" style="font-size:23px">${money(totalVal)}</div><div class="ksub">${all.length} items</div></div>
+      <div class="kpi k-chalk"><div class="klab">Fabric value</div><div class="kval" style="font-size:23px">${money(fabricVal)}</div><div class="ksub">on hand</div></div>
+      <div class="kpi k-green"><div class="klab">Trim / packing / acc.</div><div class="kval" style="font-size:23px">${money(accVal)}</div><div class="ksub">on hand</div></div>
+      <div class="kpi k-thread"><div class="klab">Low stock</div><div class="kval">${lowCount}</div><div class="ksub">at / below reorder</div></div>
+    </div>
+    <div class="toolbar">
+      <div class="search"><span class="ico">⌕</span><input id="invq" placeholder="Search code, item, supplier, colour…" value="${esc(INV_FILTER.q)}"></div>
+      <div class="filterpills">${catTabs}</div>
+    </div>
+    ${lowCount?`<div class="notice"><b>${lowCount} item${lowCount===1?"":"s"}</b> at or below reorder level — shown in red below.</div>`:""}
+    <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · balance = received − issued</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th></th></tr></thead>
+        <tbody>${body}</tbody></table></div></div>`;
+  $("#invq").oninput=e=>{ INV_FILTER.q=e.target.value; const b=$("#invq"); VIEWS.inventory(); const n=$("#invq"); if(n){ n.focus(); n.selectionStart=n.selectionEnd=n.value.length; } };
+  $$(".fp").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
+};
+function invCatPill(c){ return {Fabric:"p-blue",Trim:"p-ink",Packing:"p-teal",Accessories:"p-amber",Sample:"p-grey",Other:"p-grey"}[c]||"p-grey"; }
+
+function editInv(id){
+  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"pcs",date:today()};
+  openModal({title:id?"Edit inventory item":"New inventory item", wide:true, record:r, submitLabel:id?"Save item":"Add item",
+    fields:[
+      {name:"code",label:"Code",half:true,placeholder:"e.g. SCF0001 / TRM-001"},
+      {name:"category",label:"Category",type:"select",options:INV_CATS,half:true},
+      {name:"item",label:"Item name",required:true},
+      {name:"color",label:"Colour / spec",half:true},
+      {name:"supplier",label:"Supplier",half:true},
+      {name:"unit",label:"Unit",type:"select",options:["pcs","yds","m","kg","roll","cone","set","USD"],half:true},
+      {name:"received",label:"Received qty",type:"number",half:true},
+      {name:"issued",label:"Issued qty",type:"number",half:true},
+      {name:"unitPrice",label:"Unit price (USD)",type:"number",step:"0.001",half:true},
+      {name:"reorder",label:"Reorder level",type:"number",half:true},
+      {name:"date",label:"Date",type:"date",half:true},
+      {name:"po",label:"PO / ref",half:true},
+      {name:"remark",label:"Remark",type:"textarea",rows:2},
+    ],
+    onSubmit:async d=>{
+      d.received=Number(d.received||0); d.issued=Number(d.issued||0); d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
+      if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
+      await save(); closeModal(); VIEWS.inventory(); toast(id?"Item updated":"Item added","ok");
+    }});
+}
+function issueInv(id){
+  const it=DB.inventory.find(x=>x.id===id); if(!it) return;
+  openModal({title:"Issue stock — "+(it.item||""), record:{}, submitLabel:"Record issue",
+    fields:[{name:"qty",label:`Quantity to issue (balance ${num(invBalance(it))} ${it.unit||""})`,type:"number",required:true}],
+    onSubmit:async d=>{
+      const q=Number(d.qty||0);
+      if(q<=0){ toast("Enter a quantity","warn"); return; }
+      if(q>invBalance(it)){ toast("More than the balance on hand","warn"); return; }
+      it.issued=Number(it.issued||0)+q; await save(); closeModal(); VIEWS.inventory(); toast("Issued "+num(q)+" "+(it.unit||""),"ok");
+    }});
+}
+function delInv(id){
+  confirmModal("Delete item","Moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteInventory(id); closeModal(); VIEWS.inventory(); toast("Item moved to Recycle Bin","ok");
+  });
+}
+
+/* ---------- shared ---------- */
+function emptyState(big,sub,onclick,label="Get started"){
+  $("#view").innerHTML=`<div class="panel"><div class="empty"><div class="big">${esc(big)}</div>
+    <div style="margin-bottom:16px">${esc(sub)}</div>
+    <button class="btn primary" onclick="${onclick}">${esc(label)}</button></div></div>`;
+}
+function sizeBreakdownHTML(p){
+  const sb=p.sizeBreakdown; if(!sb||!Object.keys(sb).length) return "";
+  const cells=Object.entries(sb).map(([k,v])=>`<div style="text-align:center"><div class="muted" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.05em">${esc(k)}</div><div class="strong" style="font-variant-numeric:tabular-nums">${num(v)}</div></div>`).join("");
+  return `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--line-soft)">
+    <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Size breakdown</div>
+    <div style="display:grid;grid-template-columns:repeat(${Object.keys(sb).length},1fr);gap:8px">${cells}</div></div>`;
+}
+
+/* ============================================================
+   WIP REPORT  (work in progress across production stages)
+   ============================================================ */
+VIEWS.wip=function(){
+  setHead("Operations","WIP Report",`<button class="btn no-print" onclick="window.print()">🖨 Print / PDF</button>`);
+  const rows = DB.pos.filter(p=>p.status!=="Draft");
+  if(!rows.length){ return emptyState("Nothing in progress","Confirm an order to see work-in-progress across cutting, sewing, finishing, QC and packing.","go('pos')","Open orders"); }
+
+  // totals
+  const T={order:0,Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0,shipped:0};
+  const body = rows.map(p=>{
+    const pr=p.production||{}; const order=Number(p.quantity||0);
+    const cut=Number(pr.Cutting||0),sew=Number(pr.Sewing||0),fin=Number(pr.Finishing||0),qc=Number(pr["Quality Check"]||0),pak=Number(pr.Packing||0);
+    const shipped=shippedQty(p.id);
+    const wipFloor=Math.max(0,cut-pak);          // units inside the line
+    const ready=Math.max(0,pak-shipped);          // packed, not yet shipped
+    const balShip=Math.max(0,order-shipped);      // remaining to ship
+    const pct=productionProgress(p);
+    T.order+=order;T.Cutting+=cut;T.Sewing+=sew;T.Finishing+=fin;T["Quality Check"]+=qc;T.Packing+=pak;T.shipped+=shipped;
+    return `<tr class="clk" data-po="${p.id}">
+      <td><div class="strong">${esc(p.poNumber)}</div><div class="muted" style="font-size:12px">${esc(p.garment)}</div></td>
+      <td>${poPillCell(p.status)}</td>
+      <td class="num strong">${num(order)}</td>
+      <td class="num">${num(cut)}</td><td class="num">${num(sew)}</td><td class="num">${num(fin)}</td>
+      <td class="num">${num(qc)}</td><td class="num">${num(pak)}</td>
+      <td class="num">${num(shipped)}</td>
+      <td class="num" style="color:var(--thread);font-weight:600">${num(wipFloor)}</td>
+      <td class="num">${num(ready)}</td>
+      <td class="num strong">${num(balShip)}</td>
+      <td class="num"><div class="bar" style="width:70px;display:inline-block"><i style="width:${pct}%"></i></div> ${pct}%</td>
+    </tr>`;
+  }).join("");
+  const tWipFloor=Math.max(0,T.Cutting-T.Packing), tReady=Math.max(0,T.Packing-T.shipped), tBal=Math.max(0,T.order-T.shipped);
+  const foot=`<tr style="background:var(--surface-2);font-weight:700">
+    <td>Totals</td><td></td><td class="num">${num(T.order)}</td>
+    <td class="num">${num(T.Cutting)}</td><td class="num">${num(T.Sewing)}</td><td class="num">${num(T.Finishing)}</td>
+    <td class="num">${num(T["Quality Check"])}</td><td class="num">${num(T.Packing)}</td><td class="num">${num(T.shipped)}</td>
+    <td class="num" style="color:var(--thread)">${num(tWipFloor)}</td><td class="num">${num(tReady)}</td><td class="num">${num(tBal)}</td><td></td></tr>`;
+
+  // process WIP summary (units sitting between consecutive stages)
+  const seq=[["Cut → Sew",T.Cutting-T.Sewing],["Sew → Finish",T.Sewing-T.Finishing],["Finish → QC",T.Finishing-T["Quality Check"]],["QC → Pack",T["Quality Check"]-T.Packing],["Pack → Ship",T.Packing-T.shipped]];
+
+  $("#view").innerHTML=`
+    <div class="kpis no-print">
+      <div class="kpi"><div class="klab">Total on order</div><div class="kval">${num(T.order)}</div><div class="ksub">${rows.length} active orders</div></div>
+      <div class="kpi k-thread"><div class="klab">WIP on floor</div><div class="kval">${num(tWipFloor)}</div><div class="ksub">cut but not yet packed</div></div>
+      <div class="kpi k-chalk"><div class="klab">Packed, ready</div><div class="kval">${num(tReady)}</div><div class="ksub">awaiting export</div></div>
+      <div class="kpi k-green"><div class="klab">Balance to ship</div><div class="kval">${num(tBal)}</div><div class="ksub">order minus shipped</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Work-in-Progress by order</h3><div class="meta">${DB.meta?.company||"Garment ERP"} · ${fmtDate(today())}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>PO / Style</th><th>Status</th><th class="num">Order</th><th class="num">Cut</th><th class="num">Sew</th><th class="num">Finish</th><th class="num">QC</th><th class="num">Pack</th><th class="num">Shipped</th><th class="num">WIP</th><th class="num">Ready</th><th class="num">Bal.</th><th class="num">%</th></tr></thead>
+        <tbody>${body}${foot}</tbody></table></div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Process WIP summary</h3><div class="meta">units between stages</div></div>
+        <div class="panel-pad">${seq.map(([k,v])=>`<div class="stat-line"><span>${esc(k)}</span><span class="strong" style="color:${v>0?'var(--thread)':'var(--ink-soft)'}">${num(Math.max(0,v))} pcs</span></div>`).join("")}</div></div>
+      <div class="panel"><div class="panel-head"><h3>How WIP is read</h3></div>
+        <div class="panel-pad" style="font-size:13px;color:var(--ink-soft);line-height:1.7">
+          <b style="color:var(--ink)">WIP</b> = units cut but not yet packed (sitting inside the line).<br>
+          <b style="color:var(--ink)">Ready</b> = packed but not yet shipped.<br>
+          <b style="color:var(--ink)">Balance</b> = order quantity still to ship.<br>
+          Update stage outputs under <span class="linklike" onclick="go('production')">Production</span>; this report recalculates live.</div></div>
+    </div>`;
+  $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
+};
+
+/* ============================================================
+   PO IMPORT  (drag-and-drop PDF -> AI extraction -> review)
+   ============================================================ */
+function openImport(){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Import purchase order</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="dropzone" id="dz">
+        <div class="dropglyph">⤓</div>
+        <div class="big">Drop a PO PDF here</div>
+        <div class="sub">or click to choose a file — the order details are read automatically</div>
+        <input type="file" id="dzfile" accept="application/pdf" style="display:none">
+      </div>
+      <div class="muted" style="font-size:12.5px;margin-top:14px;text-align:center">
+        Reads buyer, style, quantity, prices, dates, size breakdown and bill of materials.
+        <br>No sample handy? <span class="linklike" onclick="importSample()">Load sample PO 142080</span>.
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const dz=$("#dz"), inp=$("#dzfile");
+  dz.onclick=()=>inp.click();
+  inp.onchange=()=>{ if(inp.files[0]) handlePOFile(inp.files[0]); };
+  ["dragover","dragenter"].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.add("hot");}));
+  ["dragleave","drop"].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();dz.classList.remove("hot");}));
+  dz.addEventListener("drop",ev=>{ ev.stopPropagation(); const f=ev.dataTransfer.files[0]; if(f) handlePOFile(f); });
+}
+function importLoading(msg){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-body" style="text-align:center;padding:40px 22px">
+    <div class="spinner"></div><div class="strong" style="font-size:15px">${esc(msg)}</div>
+    <div class="muted" style="font-size:12.5px;margin-top:6px">Reading the document…</div></div>`;
+  $("#scrim").classList.add("open");
+}
+function fileToBase64(file){
+  return new Promise((res,rej)=>{ const r=new FileReader();
+    r.onload=()=>res(String(r.result).split(",")[1]);
+    r.onerror=()=>rej(new Error("Could not read file")); r.readAsDataURL(file); });
+}
+async function handlePOFile(file){
+  if(file.type!=="application/pdf" && !/\.pdf$/i.test(file.name)){ toast("Please drop a PDF file","warn"); return; }
+  importLoading("Extracting order from "+file.name);
+  try{
+    const b64=await fileToBase64(file);
+    const data=await extractPOviaAI(b64);
+    reviewImport(data);
+  }catch(err){
+    importError(err && err.message ? err.message : "Extraction failed");
+  }
+}
+async function extractPOviaAI(base64){
+  const prompt=`You are a data-extraction engine for a garment manufacturing ERP. Read the attached buyer purchase order PDF and return ONLY a JSON object (no markdown fences, no commentary) with EXACTLY these keys:
+{"poNumber":string,"buyer":string,"buyerCountry":string,"vendor":string,"style":string,"garment":string,"fabric":string,"color":string,"quantity":number,"unitPrice":number,"currency":string,"orderDate":"YYYY-MM-DD","deliveryDate":"YYYY-MM-DD","eta":"YYYY-MM-DD","shipTerms":string,"shipVia":string,"hts":string,"retail":number,"sizes":string,"sizeBreakdown":{"<size>":number},"notes":string,"materials":[{"material":string,"type":"Fabric|Thread|Trim|Packaging|Other","color":string,"supplier":string,"unit":string}]}
+Rules: deliveryDate = the ETD (ship) date. buyer = the CUSTOMER/retailer the goods are made for. garment = the style description in Title Case. quantity = total order quantity. unitPrice = the FOB/DDP unit price. Combine duplicate material rows. Use "" or 0 when a value is absent. Return only the JSON object.`;
+  let resp;
+  if(HAS_STORE){
+    // Inside claude.ai — Claude's built-in AI service (no key needed)
+    resp=await fetch("https://api.anthropic.com/v1/messages",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ model:"claude-sonnet-4-6", max_tokens:1000,
+        messages:[{role:"user",content:[
+          {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}},
+          {type:"text",text:prompt}
+        ]}] })
+    });
+  } else {
+    // Hosted elsewhere — call our own secure proxy (keeps the API key server-side)
+    resp=await fetch("/.netlify/functions/extract-po",{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ base64, prompt })
+    });
+  }
+  if(!resp.ok){ throw new Error("AI reader unavailable (HTTP "+resp.status+"). Use Load sample, or enter the PO manually."); }
+  const out=await resp.json();
+  if(out.error){ throw new Error(typeof out.error==="string"?out.error:(out.error.message||"AI reader error")); }
+  const text=(out.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  const clean=text.replace(/```json/gi,"").replace(/```/g,"").trim();
+  const start=clean.indexOf("{"), end=clean.lastIndexOf("}");
+  if(start<0||end<0) throw new Error("Could not parse the order. Try again or enter it manually.");
+  return JSON.parse(clean.slice(start,end+1));
+}
+function importError(msg){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Couldn't read the PO automatically</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><p style="color:var(--ink-soft);font-size:14px;margin-top:2px">${esc(msg)}</p>
+      <p style="color:var(--ink-soft);font-size:13px">Automatic reading needs the AI reader. It works inside Claude, and on a hosted site only after the AI proxy is set up. You can still load the bundled sample, or add the order by hand.</p></div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button>
+      <button class="btn" id="mmanual">Enter manually</button>
+      <button class="btn primary" id="msample">Load sample PO 142080</button></div>`;
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#mmanual").onclick=()=>{ closeModal(); editPO(); };
+  $("#msample").onclick=importSample;
+}
+/* bundled sample = the uploaded Macy's / CeCe PO 142080 */
+function importSample(){
+  reviewImport({
+    poNumber:"142080", buyer:"Macy's East", buyerCountry:"United States",
+    vendor:"Active Plus Trading-FZCO", style:"7064701",
+    garment:"Velvet Bubble Slv Jewel Neck Swing Dress",
+    fabric:"90% Polyester / 10% Spandex Velvet", color:"C609 - Deep Crimson",
+    quantity:1334, unitPrice:9.05, currency:"USD",
+    orderDate:"2026-03-31", deliveryDate:"2026-07-21", eta:"2026-07-14",
+    shipTerms:"DDP 10 Days", shipVia:"Boat", hts:"391AK", retail:89.00,
+    sizes:"XS-XL", sizeBreakdown:{XS:31,S:217,M:450,L:372,XL:264},
+    notes:"Division 70. Theme: Time To Shine. Prepacks 10CBM/6ACM/8BBM. PIW 2026-08-27.",
+    materials:[
+      {material:"323/S017 PG Velvet (90% Poly/10% Spandex)",type:"Fabric",color:"Deep Crimson",supplier:"Zelouf International Co.",unit:"yd"},
+      {material:"Invisible Zipper #4",type:"Trim",color:"Dyed match",supplier:"Tat Fai Zipper Co. Ltd",unit:"pcs"},
+      {material:"Self Cov 1/2 Ball Shank Buttons",type:"Trim",color:"Dyed match",supplier:"Factory Source",unit:"pcs"},
+      {material:"Sewing Thread (lead free)",type:"Thread",color:"Match",supplier:"Factory Source",unit:"cone"},
+      {material:"FTY Sourced Trim",type:"Trim",color:"DTM",supplier:"Factory Source",unit:"yd"},
+    ]
+  });
+}
+/* review screen before anything is created */
+let PENDING=null;
+function reviewImport(d){
+  PENDING=d;
+  const row=(k,v)=>`<div><div class="k">${esc(k)}</div><div class="v">${esc(v||"—")}</div></div>`;
+  const sb=d.sizeBreakdown||{};
+  const sbHtml=Object.keys(sb).length?`<div style="grid-column:1/-1;margin-top:4px"><div class="k" style="margin-bottom:5px">Size breakdown (${num(d.quantity)} total)</div>
+    <div style="display:flex;gap:14px;flex-wrap:wrap">${Object.entries(sb).map(([s,q])=>`<span class="matchip"><b>${esc(s)}</b> ${num(q)}</span>`).join("")}</div></div>`:"";
+  const mats=(d.materials||[]);
+  const matHtml=mats.length?`<div style="grid-column:1/-1;margin-top:8px"><div class="k" style="margin-bottom:6px">Bill of materials — ${mats.length} line${mats.length===1?"":"s"} to create</div>
+    ${mats.map(m=>`<span class="matchip">${esc(m.material)} <span class="muted">· ${esc(m.type||"")}${m.supplier?" · "+esc(m.supplier):""}</span></span>`).join("")}</div>`:"";
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Review imported order — ${esc(d.poNumber||"PO")}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="notice" style="margin-top:0">Read from the document. Check the values, then create the order — nothing is saved until you confirm.</div>
+      <div class="review-grid">
+        ${row("PO number",d.poNumber)} ${row("Buyer",d.buyer)}
+        ${row("Style",d.style)} ${row("Garment",d.garment)}
+        ${row("Quantity",num(d.quantity)+" pcs")} ${row("Unit price",money(d.unitPrice,d.currency)+" ("+(d.shipTerms||"")+")")}
+        ${row("Colour",d.color)} ${row("Fabric",d.fabric)}
+        ${row("Order date",fmtDate(d.orderDate))} ${row("Delivery / ETD",fmtDate(d.deliveryDate))}
+        ${row("ETA",fmtDate(d.eta))} ${row("Order value",money(Number(d.quantity||0)*Number(d.unitPrice||0),d.currency))}
+        ${sbHtml}
+        ${matHtml}
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn" id="medit">Edit details first</button>
+      <button class="btn primary" id="mcreate">Create order + BOM</button>
+    </div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#mcreate").onclick=()=>commitImport(false);
+  $("#medit").onclick=()=>commitImport(true);
+}
+function upsertBuyer(name,extra={}){
+  if(!name) name="Unknown buyer";
+  let b=DB.buyers.find(x=>x.name.toLowerCase()===name.toLowerCase());
+  if(!b){ b={id:uid("buy"),name,country:extra.country||"",contact:"",email:"",terms:extra.terms||"",address:""}; DB.buyers.push(b); }
+  return b.id;
+}
+function upsertSupplier(name){
+  if(!name||/^factory source$/i.test(name)) name=name||"Factory Source";
+  let s=DB.suppliers.find(x=>x.name.toLowerCase()===name.toLowerCase());
+  if(!s){ s={id:uid("sup"),name,country:"",material:"",contact:"",email:""}; DB.suppliers.push(s); }
+  return s.id;
+}
+async function commitImport(thenEdit){
+  const d=PENDING; if(!d) return;
+  const buyerId=upsertBuyer(d.buyer,{country:d.buyerCountry,terms:d.shipTerms});
+  const poId=uid("po");
+  DB.pos.push({
+    id:poId, poNumber:d.poNumber||("PO-"+Date.now()), buyerId,
+    style:d.style||"", garment:d.garment||"Garment", fabric:d.fabric||"",
+    quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||"USD",
+    orderDate:d.orderDate||today(), deliveryDate:d.deliveryDate||"", eta:d.eta||"",
+    status:"Confirmed", colors:d.color||"", sizes:d.sizes||"", sizeBreakdown:d.sizeBreakdown||null,
+    shipTerms:d.shipTerms||"", shipVia:d.shipVia||"", hts:d.hts||"", retail:Number(d.retail||0),
+    vendor:d.vendor||"", notes:d.notes||"",
+    production:{Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0}
+  });
+  (d.materials||[]).forEach(m=>{
+    DB.bom.push({id:uid("bom"),poId,material:m.material||"Material",type:m.type||"Other",
+      color:m.color||"",unit:m.unit||"pcs",qtyPerGarment:"",totalQty:"",supplierId:upsertSupplier(m.supplier),
+      unitCost:"",status:"Required",eta:""});
+  });
+  await save(); closeModal(); PENDING=null;
+  toast("Imported "+(d.poNumber||"order")+" — order, buyer and BOM created","ok");
+  if(thenEdit) editPO(poId); else openPO(poId);
+}
+
+/* ---------- global drag-and-drop ---------- */
+function setupDropzone(){
+  let depth=0;
+  window.addEventListener("dragenter",e=>{ if(e.dataTransfer && Array.from(e.dataTransfer.types||[]).includes("Files")){ depth++; $("#dropOverlay").classList.add("show"); } });
+  window.addEventListener("dragover",e=>{ e.preventDefault(); });
+  window.addEventListener("dragleave",e=>{ depth=Math.max(0,depth-1); if(depth===0) $("#dropOverlay").classList.remove("show"); });
+  window.addEventListener("drop",e=>{
+    e.preventDefault(); depth=0; $("#dropOverlay").classList.remove("show");
+    if(!CURRENT) return;
+    const f=e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) handlePOFile(f);
+  });
+}
+
+
+/* ============================================================
+   USERS  (admin panel)
+   ============================================================ */
+VIEWS.users=function(){
+  if(!isAdmin()){ go("dashboard"); return; }
+  setHead("Administration","Users",`<button class="btn primary" onclick="editUser()">+ New user</button>`);
+  const admins=DB.users.filter(u=>u.role==="admin"&&u.active).length;
+  const rows=DB.users.map(u=>{
+    const you=CURRENT&&u.id===CURRENT.id;
+    return `<tr>
+      <td><div class="userchip" style="margin:0"><div class="avatar">${esc(initials(u.name||u.username))}</div>
+        <div><div class="strong">${esc(u.name||"—")} ${you?'<span class="tag">you</span>':""}</div>
+        <div class="muted" style="font-size:12px">@${esc(u.username)}${u.email?" · "+esc(u.email):""}</div></div></div></td>
+      <td><span class="rolepill ${u.role==="admin"?"rp-admin":"rp-user"}">${esc(u.role)}</span></td>
+      <td>${u.active?pill("Active","p-green"):pill("Inactive","p-grey")}</td>
+      <td><span class="secbadge ${u.twoFA?"sb-on":"sb-off"}">${u.twoFA?"2FA on":"2FA off"}</span></td>
+      <td>${u.role==="admin"?'<span class="muted" style="font-size:12px">All</span>':(u.allowedTabs?`<span class="tag">${u.allowedTabs.length} tabs</span>`:'<span class="muted" style="font-size:12px">All</span>')}</td>
+      <td class="num">
+        ${u.role!=="admin"?`<button class="btn sm" onclick="openTabAccess('${u.id}')">Tabs</button>`:""}
+        <button class="btn sm" onclick="editUser('${u.id}')">Edit</button>
+        <button class="btn sm" onclick="resetPass('${u.id}')">Password</button>
+        ${u.twoFA&&!you?`<button class="btn sm" onclick="adminDisable2FA('${u.id}')">Reset 2FA</button>`:""}
+        <button class="btn sm ${u.active?"":"primary"}" onclick="toggleUser('${u.id}')">${u.active?"Disable":"Enable"}</button>
+        <button class="btn sm danger" onclick="delUser('${u.id}')">Delete</button>
+      </td></tr>`;
+  }).join("");
+  $("#view").innerHTML=`
+    <div class="notice">Accounts control who can sign in. <b>Admins</b> see everything and manage users/settings. For <b>staff</b>, use <b>Tabs</b> to choose which pages they can open. Passwords are stored hashed; for an internet-facing rollout, add proper server-side authentication.</div>
+    <div class="panel"><div class="panel-head"><h3>User accounts</h3><div class="meta">${DB.users.length} account${DB.users.length===1?"":"s"} · ${admins} active admin${admins===1?"":"s"}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>User</th><th>Role</th><th>Status</th><th>2FA</th><th>Tabs</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+};
+/* ---- per-user tab access (admin) ---- */
+function tabLabel(id){ for(const g of NAV){ const it=g.items.find(x=>x.id===id); if(it) return it.label; } return id; }
+function openTabAccess(userId){
+  const u=DB.users.find(x=>x.id===userId); if(!u) return;
+  const current = u.allowedTabs || CONTROLLABLE_TABS.slice();   // default: all
+  const rows=CONTROLLABLE_TABS.map(t=>`<label style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px">
+    <input type="checkbox" data-tab="${t}" ${current.includes(t)?"checked":""}> ${esc(tabLabel(t))}</label>`).join("");
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Tab access — @${esc(u.username)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <p class="muted" style="font-size:13px;margin:0 0 10px">Tick the pages this staff member can open. Admins always see everything. "My Account" is always available.</p>
+      <div style="display:flex;gap:8px;margin-bottom:10px"><button class="btn sm" id="taAll">Select all</button><button class="btn sm" id="taNone">Clear all</button></div>
+      ${rows}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button><button class="btn primary" id="taSave">Save access</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#taAll").onclick=()=>$$("#modal input[data-tab]").forEach(c=>c.checked=true);
+  $("#taNone").onclick=()=>$$("#modal input[data-tab]").forEach(c=>c.checked=false);
+  $("#taSave").onclick=async()=>{
+    const sel=$$("#modal input[data-tab]").filter(c=>c.checked).map(c=>c.dataset.tab);
+    u.allowedTabs=sel;
+    await save(); closeModal(); VIEWS.users(); toast("Tab access updated for @"+u.username,"ok");
+  };
+}
+function adminDisable2FA(id){
+  const u=DB.users.find(x=>x.id===id); if(!u) return;
+  confirmModal("Reset two-factor","Turn off two-factor for @"+u.username+"? They'll sign in with just their password until they set it up again.",async()=>{
+    u.twoFA=false; u.totpSecret=""; await save(); closeModal(); VIEWS.users(); toast("Two-factor reset for @"+u.username,"ok");
+  },false);
+}
+function initials(s){ return String(s||"?").trim().split(/\s+/).map(w=>w[0]).slice(0,2).join("").toUpperCase(); }
+
+function editUser(id){
+  const r=id?DB.users.find(u=>u.id===id):{role:"user",active:true};
+  const fields=[
+    {name:"name",label:"Full name",required:true,half:true},
+    {name:"username",label:"Username",required:true,half:true,placeholder:"e.g. r.perera"},
+    {name:"email",label:"Email",half:true},
+    {name:"role",label:"Role",type:"select",options:[{value:"user",label:"Staff (user)"},{value:"admin",label:"Administrator"}],half:true},
+  ];
+  if(!id) fields.push({name:"password",label:"Set password",type:"password",required:true,placeholder:"min 6 characters"});
+  fields.push({name:"active",label:"Status",type:"select",options:[{value:"true",label:"Active"},{value:"false",label:"Inactive"}]});
+  const rec = id?{...r,active:String(r.active)}:{...r,active:"true"};
+  openModal({title:id?"Edit user":"New user", wide:true, record:rec, submitLabel:id?"Save user":"Create user", fields,
+    onSubmit:async d=>{
+      const uname=(d.username||"").trim();
+      if(DB.users.some(u=>u.username.toLowerCase()===uname.toLowerCase() && u.id!==id)){ toast("That username is taken","warn"); return; }
+      if(!id && (!d.password || d.password.length<6)){ toast("Password must be at least 6 characters","warn"); return; }
+      // prevent removing the last active admin
+      if(id){
+        const wasAdmin=r.role==="admin"&&r.active;
+        const willBeAdmin=d.role==="admin"&&d.active==="true";
+        const otherAdmins=DB.users.filter(u=>u.id!==id&&u.role==="admin"&&u.active).length;
+        if(wasAdmin&&!willBeAdmin&&otherAdmins===0){ toast("Keep at least one active administrator","warn"); return; }
+      }
+      if(id){
+        r.name=d.name; r.username=uname; r.email=d.email; r.role=d.role; r.active=(d.active==="true"); delete r.isDefault;
+        if(CURRENT&&CURRENT.id===id) CURRENT=r;
+      } else {
+        const salt=randSalt();
+        DB.users.push({id:uid("usr"),name:d.name,username:uname,email:d.email||"",role:d.role,
+          active:(d.active==="true"),salt,hash:await hashPassword(d.password,salt),
+          twoFA:false,totpSecret:"",created:today()});
+      }
+      await save(); closeModal(); VIEWS.users(); renderUserChrome(); toast(id?"User updated":"User created","ok");
+    }});
+}
+function resetPass(id){
+  const u=DB.users.find(x=>x.id===id); if(!u) return;
+  openModal({title:"Set password — @"+u.username, record:{}, submitLabel:"Update password",
+    fields:[{name:"password",label:"New password",type:"password",required:true,placeholder:"min 6 characters"}],
+    onSubmit:async d=>{
+      if(!d.password||d.password.length<6){ toast("Password must be at least 6 characters","warn"); return; }
+      u.salt=randSalt(); u.hash=await hashPassword(d.password,u.salt); delete u.isDefault;
+      await save(); closeModal(); toast("Password updated for @"+u.username,"ok");
+    }});
+}
+async function toggleUser(id){
+  const u=DB.users.find(x=>x.id===id); if(!u) return;
+  if(u.active && u.role==="admin"){
+    const others=DB.users.filter(x=>x.id!==id&&x.role==="admin"&&x.active).length;
+    if(others===0){ toast("Keep at least one active administrator","warn"); return; }
+  }
+  if(CURRENT&&CURRENT.id===id && u.active){ toast("You can't disable your own account","warn"); return; }
+  u.active=!u.active; await save(); VIEWS.users(); toast(u.active?"User enabled":"User disabled","ok");
+}
+function delUser(id){
+  const u=DB.users.find(x=>x.id===id); if(!u) return;
+  if(CURRENT&&CURRENT.id===id){ toast("You can't delete your own account","warn"); return; }
+  if(u.role==="admin"){
+    const others=DB.users.filter(x=>x.id!==id&&x.role==="admin"&&x.active).length;
+    if(others===0){ toast("Keep at least one active administrator","warn"); return; }
+  }
+  confirmModal("Delete user","@"+u.username+" will no longer be able to sign in.",async()=>{
+    DB.users=DB.users.filter(x=>x.id!==id); await save(); closeModal(); VIEWS.users(); toast("User deleted","ok");
+  });
+}
+
+/* ============================================================
+   AUTH SCREENS  (setup / login / 2FA / recovery)
+   ============================================================ */
+let PENDING_LOGIN=null;      // user awaiting 2FA
+let PENDING_2FA_SECRET=null; // secret being set up
+const AUTH_BRAND=`<div class="lmark"><div class="stitch">S</div><div><h1>Seam</h1><div class="sub">Garment ERP</div></div></div>`;
+function authErr(msg){ const e=$("#a_err"); if(e){ e.textContent=msg; e.classList.add("show"); } }
+function fldHTML(id,label,type,ph,extra=""){ return `<label class="fld"><span class="lab">${label}</span><input id="${id}" type="${type}" ${extra} placeholder="${ph||""}"></label>`; }
+
+function showLogin(){ renderAuth("login"); }
+function renderAuth(view, ctx={}){
+  if(view==="login"||view==="setup"||view==="forgot"){ CURRENT=null; }
+  const box=$("#authBox"); $("#authScreen").classList.add("show");
+  if(view==="setup"){
+    box.innerHTML=`${AUTH_BRAND}<h2>Create administrator</h2>
+      <div class="lsub">Set up the first account for this workspace. You'll use it to add staff later.</div>
+      <div class="loginerr" id="a_err"></div>
+      ${fldHTML("a_name","Full name","text","Your name")}
+      ${fldHTML("a_user","Username","text","e.g. admin")}
+      ${fldHTML("a_pass","Password","password","min 6 characters")}
+      ${fldHTML("a_pass2","Confirm password","password","re-enter password")}
+      <button class="btn primary" id="a_btn">Create admin account</button>`;
+    $("#a_btn").onclick=submitSetup;
+    $("#a_pass2").onkeydown=e=>{ if(e.key==="Enter") submitSetup(); };
+    focusFirst();
+  }
+  else if(view==="login"){
+    box.innerHTML=`${AUTH_BRAND}<h2>Sign in</h2>
+      <div class="lsub">Enter your account to continue.</div>
+      <div class="loginerr" id="a_err"></div>
+      ${fldHTML("a_user","Username","text","username","autocomplete=username")}
+      ${fldHTML("a_pass","Password","password","••••••••","autocomplete=current-password")}
+      <button class="btn primary" id="a_btn">Sign in</button>
+      <span class="authlink" id="a_forgot">Forgot password?</span>`;
+    $("#a_btn").onclick=submitLogin;
+    $("#a_user").onkeydown=e=>{ if(e.key==="Enter") $("#a_pass").focus(); };
+    $("#a_pass").onkeydown=e=>{ if(e.key==="Enter") submitLogin(); };
+    $("#a_forgot").onclick=()=>renderAuth("forgot");
+    focusFirst();
+  }
+  else if(view==="twofa"){
+    box.innerHTML=`${AUTH_BRAND}<h2>Two-factor code</h2>
+      <div class="lsub">Enter the 6-digit code from your authenticator app.</div>
+      <div class="loginerr" id="a_err"></div>
+      <label class="fld otpinput"><span class="lab">Authentication code</span><input id="a_code" inputmode="numeric" maxlength="6" placeholder="000000"></label>
+      <button class="btn primary" id="a_btn">Verify</button>
+      <span class="authlink" id="a_back">Back to sign in</span>
+      <span class="authlink" id="a_lost">Lost your device? Recover account</span>`;
+    $("#a_btn").onclick=submit2FA;
+    $("#a_code").onkeydown=e=>{ if(e.key==="Enter") submit2FA(); };
+    $("#a_back").onclick=()=>{ PENDING_LOGIN=null; renderAuth("login"); };
+    $("#a_lost").onclick=()=>renderAuth("forgot");
+    focusFirst();
+  }
+  else if(view==="forgot"){
+    box.innerHTML=`${AUTH_BRAND}<h2>Recover account</h2>
+      <div class="lsub">Enter your recovery code to set a new password. This also switches off two-factor authentication.</div>
+      <div class="loginerr" id="a_err"></div>
+      ${fldHTML("a_user","Username","text","username")}
+      ${fldHTML("a_code","Recovery code","text","XXXX-XXXX-XXXX-XXXX")}
+      ${fldHTML("a_pass","New password","password","min 6 characters")}
+      ${fldHTML("a_pass2","Confirm password","password","re-enter password")}
+      <button class="btn primary" id="a_btn">Reset account</button>
+      <span class="authlink" id="a_back">Back to sign in</span>`;
+    $("#a_btn").onclick=submitForgot;
+    $("#a_pass2").onkeydown=e=>{ if(e.key==="Enter") submitForgot(); };
+    $("#a_back").onclick=()=>renderAuth("login");
+    focusFirst();
+  }
+  else if(view==="recovery"){
+    box.innerHTML=`${AUTH_BRAND}<h2>Save your recovery code</h2>
+      <div class="lsub">This is the only way back in if you forget your password. Store it somewhere safe — it won't be shown again.</div>
+      <div class="codebox">${esc(ctx.code)}</div>
+      <button class="btn primary" id="a_btn">I've saved it — continue</button>`;
+    $("#a_btn").onclick=()=>{ ctx.onContinue ? ctx.onContinue() : renderAuth("login"); };
+  }
+}
+function focusFirst(){ setTimeout(()=>{ const el=$("#authBox input"); if(el) el.focus(); },60); }
+
+async function submitSetup(){
+  const name=$("#a_name").value.trim(), user=$("#a_user").value.trim(), p1=$("#a_pass").value, p2=$("#a_pass2").value;
+  if(!name||!user){ return authErr("Enter your name and a username."); }
+  if(p1.length<6){ return authErr("Password must be at least 6 characters."); }
+  if(p1!==p2){ return authErr("Passwords don't match."); }
+  const code=await completeSetup(name,user,p1);
+  renderAuth("recovery",{code, onContinue:enterApp});
+}
+async function submitLogin(){
+  const username=$("#a_user").value.trim(), password=$("#a_pass").value;
+  if(!username||!password){ return authErr("Enter your username and password."); }
+  const u=DB.users.find(x=>x.username.toLowerCase()===username.toLowerCase());
+  if(!u||!u.active){ return authErr("No active account with that username."); }
+  const h=await hashPassword(password,u.salt);
+  if(h!==u.hash){ return authErr("Incorrect password. Try again."); }
+  if(u.twoFA && u.totpSecret){ PENDING_LOGIN=u; renderAuth("twofa"); }
+  else finalizeLogin(u);
+}
+async function submit2FA(){
+  const code=$("#a_code").value; const u=PENDING_LOGIN;
+  if(!u) return renderAuth("login");
+  if(await verifyTOTP(u.totpSecret, code)){ PENDING_LOGIN=null; finalizeLogin(u); }
+  else authErr("That code isn't valid. Check your app and try again.");
+}
+async function submitForgot(){
+  const username=$("#a_user").value.trim(), code=$("#a_code").value.trim().toUpperCase(), p1=$("#a_pass").value, p2=$("#a_pass2").value;
+  if(!username||!code){ return authErr("Enter your username and recovery code."); }
+  const u=DB.users.find(x=>x.username.toLowerCase()===username.toLowerCase());
+  if(!u||!u.recoveryHash){ return authErr("No recovery code on this account. Ask an administrator to reset your password."); }
+  if(p1.length<6){ return authErr("New password must be at least 6 characters."); }
+  if(p1!==p2){ return authErr("Passwords don't match."); }
+  const rh=await hashPassword(code, u.recoverySalt);
+  if(rh!==u.recoveryHash){ return authErr("That recovery code isn't correct."); }
+  u.salt=randSalt(); u.hash=await hashPassword(p1,u.salt);
+  u.twoFA=false; u.totpSecret="";
+  const nc=generateRecoveryCode(); u.recoverySalt=randSalt(); u.recoveryHash=await hashPassword(nc,u.recoverySalt);
+  await storeSet(DB);
+  renderAuth("recovery",{code:nc, onContinue:()=>{ toast("Account recovered — sign in with your new password","ok"); renderAuth("login"); }});
+}
+async function finalizeLogin(u){ CURRENT=u; await sessionSet({userId:u.id}); enterApp(); }
+
+async function doLogout(){
+  await sessionSet(null); CURRENT=null; PENDING_LOGIN=null;
+  $("#topActions").innerHTML=""; $("#view").innerHTML=""; $("#nav").innerHTML=""; $("#sideFoot").innerHTML="";
+  renderAuth("login");
+}
+function renderUserChrome(){
+  if(!CURRENT) return;
+  $("#sideFoot").innerHTML=`
+    <div class="userchip"><div class="avatar">${esc(initials(CURRENT.name||CURRENT.username))}</div>
+      <div><div class="un">${esc(CURRENT.name||CURRENT.username)}</div>
+      <div class="ur">${esc(CURRENT.role==="admin"?"Administrator":"Staff")}${CURRENT.twoFA?" · 2FA on":""}</div></div></div>
+    ${FB_ON?`<div style="font-size:11px;color:#7fd8b0;margin-bottom:8px">☁ Shared database — on</div>`:""}
+    ${isAdmin()?`<button onclick="doReset()" style="margin-bottom:8px">Reset demo data</button>`:""}
+    <button onclick="doLogout()">Sign out</button>`;
+}
+function enterApp(){
+  $("#authScreen").classList.remove("show");
+  renderUserChrome(); buildNav(); go(ROUTE);
+  subscribeFirebase();
+  if(!PERSIST_OK){
+    const t=$("#view");
+    if(t && !$("#persistNote")){
+      const n=document.createElement("div");
+      n.id="persistNote"; n.className="notice"; n.style.margin="0 0 16px";
+      n.textContent="Persistent storage isn't available here, so changes last only for this session.";
+      t.prepend(n);
+    }
+  }
+}
+
+/* ============================================================
+   MY ACCOUNT  (change password, 2FA, recovery code)
+   ============================================================ */
+VIEWS.account=function(){
+  if(!CURRENT) return showLogin();
+  setHead("Account","My Account");
+  const u=CURRENT;
+  const recoveryPanel = isAdmin() ? `
+    <div class="panel"><div class="panel-head"><h3>Recovery code</h3>
+      <div class="actions">${u.recoveryHash?pill("Set","p-teal"):pill("Not set","p-grey")}</div></div>
+      <div class="panel-pad">
+        <p class="muted" style="font-size:13px;margin:0 0 12px">A recovery code lets you reset your password if you forget it — the only self-service way back into an admin account. Regenerating replaces any previous code.</p>
+        <button class="btn" onclick="regenRecovery()">${u.recoveryHash?"Regenerate recovery code":"Generate recovery code"}</button>
+      </div></div>` : "";
+  $("#view").innerHTML=`
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Change password</h3></div>
+        <div class="panel-pad">
+          <label class="fld"><span class="lab">Current password</span><input id="cp_old" type="password"></label>
+          <label class="fld"><span class="lab">New password</span><input id="cp_new" type="password" placeholder="min 6 characters"></label>
+          <label class="fld"><span class="lab">Confirm new password</span><input id="cp_c" type="password"></label>
+          <button class="btn primary" onclick="changeMyPassword()">Update password</button>
+        </div></div>
+      <div class="panel"><div class="panel-head"><h3>Two-factor authentication</h3>
+        <div class="actions"><span class="secbadge ${u.twoFA?"sb-on":"sb-off"}">${u.twoFA?"On":"Off"}</span></div></div>
+        <div class="panel-pad">
+          <p class="muted" style="font-size:13px;margin:0 0 12px">Protect sign-in with a 6-digit code from Google Authenticator, Authy or a similar app${u.twoFA?", in addition to your password.":"."}</p>
+          ${u.twoFA
+            ? `<button class="btn danger" onclick="disable2FA()">Turn off two-factor</button>`
+            : `<button class="btn primary" onclick="enable2FA()">Set up two-factor</button>`}
+        </div></div>
+    </div>
+    ${recoveryPanel}`;
+};
+async function changeMyPassword(){
+  const oldp=$("#cp_old").value, np=$("#cp_new").value, cf=$("#cp_c").value;
+  const h=await hashPassword(oldp, CURRENT.salt);
+  if(h!==CURRENT.hash){ toast("Current password is incorrect","warn"); return; }
+  if(np.length<6){ toast("New password must be at least 6 characters","warn"); return; }
+  if(np!==cf){ toast("New passwords don't match","warn"); return; }
+  CURRENT.salt=randSalt(); CURRENT.hash=await hashPassword(np,CURRENT.salt);
+  await save(); toast("Password updated","ok"); VIEWS.account();
+}
+function regenRecovery(){
+  confirmModal("Regenerate recovery code","Any previous recovery code stops working. You'll see the new one once.",async()=>{
+    const code=generateRecoveryCode(); CURRENT.recoverySalt=randSalt(); CURRENT.recoveryHash=await hashPassword(code,CURRENT.recoverySalt);
+    await save(); closeModal(); showRecoveryModal(code);
+  },false);
+}
+function showRecoveryModal(code){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Your recovery code</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><p class="muted" style="font-size:13px;margin:2px 0 0">Store this safely — it won't be shown again.</p>
+      <div class="codebox">${esc(code)}</div></div>
+    <div class="modal-foot"><button class="btn primary" id="mok">I've saved it</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mok").onclick=closeModal;
+}
+function enable2FA(){
+  PENDING_2FA_SECRET=generateTOTPSecret();
+  const uri=otpauthURI(CURRENT.username, PENDING_2FA_SECRET);
+  const pretty=PENDING_2FA_SECRET.replace(/(.{4})/g,"$1 ").trim();
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Set up two-factor authentication</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <p class="muted" style="font-size:13px;margin:0 0 6px">1. Scan this QR code with Google Authenticator, Authy, or a similar app.</p>
+      <div class="qrwrap" id="qrTarget"></div>
+      <p class="muted" style="font-size:12.5px;margin:4px 0 6px;text-align:center">Can't scan? Enter this key manually:</p>
+      <div class="keyline">${esc(pretty)}</div>
+      <p class="muted" style="font-size:13px;margin:16px 0 6px">2. Enter the 6-digit code the app shows to confirm.</p>
+      <label class="fld otpinput"><input id="tf_code" inputmode="numeric" maxlength="6" placeholder="000000"></label>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="tf_verify">Verify & enable</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#tf_verify").onclick=verifyEnable2FA;
+  $("#tf_code").onkeydown=e=>{ if(e.key==="Enter") verifyEnable2FA(); };
+  try{
+    if(window.QRCode){ new QRCode(document.getElementById("qrTarget"),{text:uri,width:184,height:184,correctLevel:QRCode.CorrectLevel.M}); }
+    else { $("#qrTarget").innerHTML=`<div class="muted" style="font-size:12px;padding:10px 20px">QR display unavailable offline — use the manual key below.</div>`; }
+  }catch(e){ $("#qrTarget").innerHTML=`<div class="muted" style="font-size:12px;padding:10px 20px">QR display unavailable — use the manual key below.</div>`; }
+  setTimeout(()=>{ const c=$("#tf_code"); if(c) c.focus(); },80);
+}
+async function verifyEnable2FA(){
+  const code=$("#tf_code").value;
+  if(!(window.crypto&&crypto.subtle)){ toast("This browser can't verify codes securely","warn"); return; }
+  if(await verifyTOTP(PENDING_2FA_SECRET, code)){
+    CURRENT.twoFA=true; CURRENT.totpSecret=PENDING_2FA_SECRET; PENDING_2FA_SECRET=null;
+    await save(); closeModal(); renderUserChrome(); VIEWS.account(); toast("Two-factor authentication enabled","ok");
+  } else { toast("That code isn't valid yet — try the current one","warn"); }
+}
+function disable2FA(){
+  openModal({title:"Turn off two-factor", record:{}, submitLabel:"Turn off",
+    fields:[{name:"pw",label:"Confirm your password",type:"password",required:true}],
+    onSubmit:async d=>{
+      const h=await hashPassword(d.pw, CURRENT.salt);
+      if(h!==CURRENT.hash){ toast("Password is incorrect","warn"); return; }
+      CURRENT.twoFA=false; CURRENT.totpSecret=""; await save(); closeModal(); renderUserChrome(); VIEWS.account(); toast("Two-factor turned off","ok");
+    }});
+}
+
+/* ---------- reset (admin) ---------- */
+function doReset(){
+  if(!isAdmin()) return;
+  confirmModal("Reset demo data","This restores the sample buyers, orders and shipments. User accounts are kept.",async()=>{
+    const users=DB.users; DB=seed(); DB.users=users; await storeSet(DB);
+    closeModal(); buildNav(); go("dashboard"); toast("Demo data reset","ok");
+  });
+}
+
+/* boot */
+setupDropzone();
+(async function boot(){
+  initFirebase();
+  await initData();
+  const s=await sessionGet();
+  if(s&&s.userId){ const u=DB.users.find(x=>x.id===s.userId&&x.active); if(u) CURRENT=u; }
+  if(CURRENT) enterApp();
+  else if(needsSetup()) renderAuth("setup");
+  else renderAuth("login");
+})();
+</script>
