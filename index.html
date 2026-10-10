@@ -4,6 +4,7 @@
 <title>Seam — Garment Manufacturing ERP</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>try{ if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; }catch(e){}</script>
 <!-- Shared database (optional). firebase-config.js fills window.FIREBASE_CONFIG when hosted. -->
 <script>window.FIREBASE_CONFIG = null;</script>
@@ -1861,7 +1862,7 @@ function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)
 const INV_FILTER={cat:"All",q:""};
 
 VIEWS.inventory=function(){
-  setHead("Procurement","Inventory",`<button class="btn primary" onclick="editInv()">+ Add item</button>`);
+  setHead("Procurement","Inventory",`<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> <button class="btn primary" onclick="editInv()">+ Add item</button>`);
   const all=DB.inventory||[];
   const totalVal=all.reduce((a,it)=>a+invValue(it),0);
   const fabricVal=all.filter(i=>i.category==="Fabric").reduce((a,it)=>a+invValue(it),0);
@@ -1914,6 +1915,138 @@ VIEWS.inventory=function(){
   $$(".fp").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
 };
 function invCatPill(c){ return {Fabric:"p-blue",Trim:"p-ink",Packing:"p-teal",Accessories:"p-amber",Sample:"p-grey",Other:"p-grey"}[c]||"p-grey"; }
+
+/* ============================================================
+   INVENTORY — IMPORT FROM EXCEL (.xlsx)  [free, in-browser]
+   Reads a "Fabric In & Out" style sheet and upserts items by CODE.
+   ============================================================ */
+let INV_IMPORT=null;   // parsed {rows, newCount, updCount, category}
+function openInvImport(){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Import inventory from Excel</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="dropzone" id="invdz">
+        <div class="dropglyph">⬍</div>
+        <div class="big">Drop an Excel file here</div>
+        <div class="sub">or click to choose — reads a Fabric In &amp; Out style sheet (CODE, Supplier, Item, Colour, In-house Yds, Unit Price, Issue Yds)</div>
+        <input type="file" id="invfile" accept=".xlsx,.xls" style="display:none">
+      </div>
+      <label class="fld" style="margin-top:14px"><span class="lab">Import as category</span>
+        <select id="invImpCat">${INV_CATS.map(c=>`<option ${c==="Fabric"?"selected":""}>${c}</option>`).join("")}</select></label>
+      <div class="muted" style="font-size:12.5px">Matches existing items by <b>Code</b> — same code updates the item, new codes are added. Nothing is saved until you confirm.</div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const dz=$("#invdz"), inp=$("#invfile");
+  dz.onclick=()=>inp.click();
+  inp.onchange=()=>{ if(inp.files[0]) handleInvExcel(inp.files[0]); };
+  ["dragover","dragenter"].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();ev.stopPropagation();dz.classList.add("hot");}));
+  ["dragleave","drop"].forEach(e=>dz.addEventListener(e,ev=>{ev.preventDefault();ev.stopPropagation();dz.classList.remove("hot");}));
+  dz.addEventListener("drop",ev=>{ ev.stopPropagation(); const f=ev.dataTransfer.files[0]; if(f) handleInvExcel(f); });
+}
+function normHdr(s){ return String(s==null?"":s).replace(/\s+/g," ").trim().toUpperCase(); }
+function xlDate(v){
+  if(v==null||v==="") return "";
+  if(typeof v==="number" && window.XLSX && XLSX.SSF){ try{ const s=XLSX.SSF.format("yyyy-mm-dd", v); if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s; }catch(e){} }
+  if(v instanceof Date){ return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,"0")}-${String(v.getDate()).padStart(2,"0")}`; }
+  const d=new Date(v); if(isNaN(d)) return ""; return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+async function handleInvExcel(file){
+  if(typeof XLSX==="undefined"){ toast("Excel reader didn't load — check your connection","warn"); return; }
+  importLoading("Reading "+file.name);
+  try{
+    const buf=await file.arrayBuffer();
+    const wb=XLSX.read(buf,{type:"array"});
+    const cat=($("#invImpCat")&&$("#invImpCat").value)||"Fabric";
+    // pick the sheet: one whose name mentions FABRIC IN, else the first
+    let sheetName=wb.SheetNames.find(n=>/FABRIC\s*IN/i.test(n)) || wb.SheetNames[0];
+    const ws=wb.Sheets[sheetName];
+    const grid=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+    // find header row: the row containing CODE and ITEM
+    let hr=-1;
+    for(let i=0;i<Math.min(grid.length,15);i++){
+      const H=(grid[i]||[]).map(normHdr);
+      if(H.includes("CODE") && H.some(x=>/ITEM/.test(x))){ hr=i; break; }
+    }
+    if(hr<0) throw new Error("Couldn't find the header row (needs columns like CODE, Supplier, Item, In-house Yds).");
+    const H=(grid[hr]||[]).map(normHdr);
+    const col=(...names)=>{ for(const nm of names){ const idx=H.findIndex(h=>h===nm||h.replace(/\n/g," ").replace(/\s+/g," ")===nm); if(idx>=0) return idx; }
+      for(const nm of names){ const idx=H.findIndex(h=>h.includes(nm)); if(idx>=0) return idx; } return -1; };
+    const ci={ code:col("CODE"), date:col("INHOUSE DATE","IN HOUSE DATE","DATE"), po:col("PO NUMBER","PO"),
+      invoice:col("INVOICE NUMBER","INVOICE"), supplier:col("SUPPLIER"), item:col("ITEM NAME","ITEM"),
+      color:col("COLOR","COLOUR"), received:col("IN HOUSE YDS","INHOUSE YDS","IN HOUSE","RECEIVED"),
+      price:col("UNIT PRICE","UNITPRICE"), issued:col("ISSUE YDS","ISSUED"), remark:col("REMARK"),
+      style:col("STYLE") };
+    if(ci.code<0||ci.item<0) throw new Error("The sheet is missing a Code or Item column.");
+    const num=v=>{ const n=Number(String(v==null?"":v).replace(/,/g,"")); return isNaN(n)?0:n; };
+    const get=(row,k)=> (ci[k]>=0 && ci[k]<row.length)? row[ci[k]] : null;
+    const rows=[];
+    for(let i=hr+1;i<grid.length;i++){
+      const row=grid[i]||[]; const code=get(row,"code");
+      if(code==null||String(code).trim()==="") continue;
+      const item=get(row,"item");
+      if((item==null||String(item).trim()==="")) continue;
+      rows.push({
+        code:String(code).trim(), category:cat, date:xlDate(get(row,"date")),
+        supplier:String(get(row,"supplier")||"").trim(), item:String(item).trim(),
+        color:String(get(row,"color")||"").trim(), unit:(cat==="Fabric"?"yds":"pcs"),
+        received:num(get(row,"received")), issued:num(get(row,"issued")),
+        unitPrice:num(get(row,"price")), reorder:0,
+        po:String(get(row,"po")||"").trim(), invoice:String(get(row,"invoice")||"").trim(),
+        style:String(get(row,"style")||"").trim(), remark:String(get(row,"remark")||"").trim()
+      });
+    }
+    if(!rows.length) throw new Error("No data rows with a Code were found.");
+    // compute new vs update by code (within same category)
+    const existing={}; (DB.inventory||[]).forEach(it=>{ if(it.code) existing[it.code.toLowerCase()]=it; });
+    let upd=0,nw=0; rows.forEach(r=>{ existing[r.code.toLowerCase()]?upd++:nw++; });
+    INV_IMPORT={rows,newCount:nw,updCount:upd,category:cat,sheet:sheetName};
+    reviewInvImport();
+  }catch(e){
+    $("#modal").className="modal";
+    $("#modal").innerHTML=`<div class="modal-head"><h3>Couldn't read that file</h3><div class="x" id="mx">×</div></div>
+      <div class="modal-body"><p class="muted" style="font-size:14px">${esc(e&&e.message?e.message:"Unknown error")}</p>
+      <p class="muted" style="font-size:13px">Make sure it's the stock Excel file with a Fabric In &amp; Out sheet.</p></div>
+      <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button><button class="btn" id="mretry">Try another file</button></div>`;
+    $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal; $("#mretry").onclick=openInvImport;
+  }
+}
+function reviewInvImport(){
+  const d=INV_IMPORT; if(!d) return;
+  const sample=d.rows.slice(0,8).map(r=>`<tr>
+    <td class="mono">${esc(r.code)}</td><td>${esc(r.item)}</td><td>${esc(r.color||"")}</td>
+    <td>${esc(r.supplier||"")}</td><td class="num">${num(r.received)}</td><td class="num">${num(r.issued)}</td>
+    <td class="num">${money(r.unitPrice,"USD")}</td></tr>`).join("");
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Review import — ${esc(d.sheet)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="notice" style="margin-top:0"><b>${d.rows.length}</b> rows read as <b>${esc(d.category)}</b> · <b>${d.newCount}</b> new item${d.newCount===1?"":"s"}, <b>${d.updCount}</b> will update existing (matched by code). Nothing is saved until you confirm.</div>
+      <div style="overflow-x:auto"><table>
+        <thead><tr><th>Code</th><th>Item</th><th>Colour</th><th>Supplier</th><th class="num">In-house</th><th class="num">Issued</th><th class="num">Unit price</th></tr></thead>
+        <tbody>${sample}</tbody></table></div>
+      ${d.rows.length>8?`<div class="muted" style="font-size:12px;margin-top:8px">… and ${d.rows.length-8} more.</div>`:""}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="minv">Import ${d.rows.length} items</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#minv").onclick=commitInvImport;
+}
+async function commitInvImport(){
+  const d=INV_IMPORT; if(!d) return;
+  if(!DB.inventory) DB.inventory=[];
+  const byCode={}; DB.inventory.forEach(it=>{ if(it.code) byCode[it.code.toLowerCase()]=it; });
+  d.rows.forEach(r=>{
+    const ex=byCode[r.code.toLowerCase()];
+    if(ex){ Object.assign(ex, r); }   // update in place (keeps its id)
+    else { const o={id:uid("inv"),...r}; DB.inventory.push(o); byCode[r.code.toLowerCase()]=o; }
+  });
+  await save(); INV_IMPORT=null; closeModal(); VIEWS.inventory();
+  toast(`Imported ${d.rows.length} items (${d.newCount} new, ${d.updCount} updated)`,"ok");
+}
 
 function editInv(id){
   const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"pcs",date:today()};
