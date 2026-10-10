@@ -614,6 +614,7 @@ async function initData(){
   if(!DB.cheques) DB.cheques=[];
   if(!DB.chequeLayout) DB.chequeLayout=defaultChequeLayout();
   if(!DB.inventory) DB.inventory=seedInventory();
+  if(!DB.issues) DB.issues=[];
   // drop any throwaway default admin from older versions
   DB.users = DB.users.filter(u=>!u.isDefault);
   // auto-purge recycle bin items older than 30 days
@@ -746,6 +747,7 @@ function navBadge(id){
 const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","production","wip","export","cheque"];
 const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
+  if(route==="issues") route="inventory";   // issue notes follow inventory access
   if(isAdmin()) return true;
   if(ALWAYS_ALLOWED.includes(route)) return true;
   if(ADMIN_ROUTES.includes(route)) return false;
@@ -834,9 +836,21 @@ function fieldHTML(f,val){
   } else if(f.type==="textarea"){
     ctrl=`<textarea name="${f.name}" rows="${f.rows||3}">${esc(val)}</textarea>`;
   } else {
-    ctrl=`<input name="${f.name}" type="${f.type||"text"}" value="${esc(val)}" ${f.step?`step="${f.step}"`:""} ${f.placeholder?`placeholder="${esc(f.placeholder)}"`:""}>`;
+    let listAttr="", dl="";
+    if(f.list && f.list.length){
+      const lid="dl_"+f.name+"_"+Math.random().toString(36).slice(2,6);
+      listAttr=`list="${lid}"`;
+      dl=`<datalist id="${lid}">${f.list.slice(0,500).map(o=>`<option value="${esc(o)}">`).join("")}</datalist>`;
+    }
+    ctrl=`<input name="${f.name}" type="${f.type||"text"}" value="${esc(val)}" ${listAttr} ${f.step?`step="${f.step}"`:""} ${f.min!=null?`min="${f.min}"`:""} ${f.placeholder?`placeholder="${esc(f.placeholder)}"`:""} autocomplete="off">${dl}`;
   }
   return `<label class="fld" style="${f.half?"":"grid-column:1/-1"}">${lab}${ctrl}</label>`;
+}
+/* distinct non-empty values of a field across inventory (for autocomplete) */
+function invDistinct(field){
+  const set=new Set();
+  (DB.inventory||[]).forEach(it=>{ const v=(it[field]||"").toString().trim(); if(v) set.add(v); });
+  return Array.from(set).sort((a,b)=>a.localeCompare(b));
 }
 function confirmModal(title,body,onYes,danger=true){
   $("#modal").className="modal";
@@ -1859,27 +1873,40 @@ const INV_CATS=["Fabric","Trim","Packing","Accessories","Sample","Other"];
 function invBalance(it){ return Number(it.received||0)-Number(it.issued||0); }
 function invValue(it){ return invBalance(it)*Number(it.unitPrice||0); }
 function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)<=r; }
-const INV_FILTER={cat:"All",q:""};
+const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All"};
+
+function invFilteredRows(){
+  let rows=(DB.inventory||[]).slice();
+  if(INV_FILTER.cat!=="All") rows=rows.filter(i=>i.category===INV_FILTER.cat);
+  if(INV_FILTER.supplier!=="All") rows=rows.filter(i=>(i.supplier||"")===INV_FILTER.supplier);
+  if(INV_FILTER.status==="In stock") rows=rows.filter(i=>invBalance(i)>0);
+  else if(INV_FILTER.status==="Low") rows=rows.filter(invLow);
+  else if(INV_FILTER.status==="Out") rows=rows.filter(i=>invBalance(i)<=0);
+  if(INV_FILTER.q){ const q=INV_FILTER.q.toLowerCase(); rows=rows.filter(i=>
+    (i.code||"").toLowerCase().includes(q)||(i.grn||"").toLowerCase().includes(q)||(i.item||"").toLowerCase().includes(q)||
+    (i.supplier||"").toLowerCase().includes(q)||(i.color||"").toLowerCase().includes(q)||(i.po||"").toLowerCase().includes(q)); }
+  rows.sort((a,b)=>(a.category+a.item).localeCompare(b.category+b.item));
+  return rows;
+}
 
 VIEWS.inventory=function(){
-  setHead("Procurement","Inventory",`<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> <button class="btn primary" onclick="editInv()">+ Add item</button>`);
+  setHead("Procurement","Inventory",
+    `<button class="btn" onclick="exportInventory()">⬆ Export Excel</button> `+
+    `<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> `+
+    `<button class="btn" onclick="go('issues')">Issue Notes</button> `+
+    `<button class="btn" onclick="openIssueNote()">− Fabric Issue</button> `+
+    `<button class="btn primary" onclick="editInv()">+ Add item</button>`);
   const all=DB.inventory||[];
   const totalVal=all.reduce((a,it)=>a+invValue(it),0);
   const fabricVal=all.filter(i=>i.category==="Fabric").reduce((a,it)=>a+invValue(it),0);
   const accVal=all.filter(i=>["Trim","Packing","Accessories"].includes(i.category)).reduce((a,it)=>a+invValue(it),0);
   const lowCount=all.filter(invLow).length;
 
-  let rows=all.slice();
-  if(INV_FILTER.cat!=="All") rows=rows.filter(i=>i.category===INV_FILTER.cat);
-  if(INV_FILTER.q){ const q=INV_FILTER.q.toLowerCase(); rows=rows.filter(i=>
-    (i.code||"").toLowerCase().includes(q)||(i.item||"").toLowerCase().includes(q)||
-    (i.supplier||"").toLowerCase().includes(q)||(i.color||"").toLowerCase().includes(q)); }
-  rows.sort((a,b)=>(a.category+a.item).localeCompare(b.category+b.item));
-
+  const rows=invFilteredRows();
   const body = rows.length?rows.map(it=>{
     const bal=invBalance(it), low=invLow(it);
     return `<tr>
-      <td class="mono">${esc(it.code||"—")}</td>
+      <td class="mono">${esc(it.code||"—")}${it.grn?`<div class="muted" style="font-size:11px">GRN ${esc(it.grn)}</div>`:""}</td>
       <td><div class="strong">${esc(it.item)}</div>${it.color&&it.color!=="—"?`<div class="muted" style="font-size:12px">${esc(it.color)}</div>`:""}</td>
       <td>${pill(it.category,invCatPill(it.category))}</td>
       <td>${esc(it.supplier||"—")}</td>
@@ -1888,12 +1915,13 @@ VIEWS.inventory=function(){
       <td class="num strong" style="${low?"color:var(--red)":""}">${num(bal)} <span class="muted" style="font-weight:400">${esc(it.unit||"")}</span>${low?' <span class="pill p-red" style="padding:1px 6px"><span class="dot"></span>low</span>':""}</td>
       <td class="num">${money(it.unitPrice,"USD")}</td>
       <td class="num strong" style="color:var(--chalk)">${money(invValue(it))}</td>
-      <td class="num"><button class="btn sm" onclick="issueInv('${it.id}')">Issue</button>
-        <button class="btn sm" onclick="editInv('${it.id}')">Edit</button>
+      <td class="num"><button class="btn sm" onclick="editInv('${it.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delInv('${it.id}')">Del</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No items${INV_FILTER.cat!=="All"?" in "+INV_FILTER.cat:""}.</td></tr>`;
+  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No items match these filters.</td></tr>`;
 
   const catTabs=["All"].concat(INV_CATS).map(c=>`<div class="fp ${INV_FILTER.cat===c?"on":""}" data-c="${c}">${c}</div>`).join("");
+  const statusTabs=["All","In stock","Low","Out"].map(s=>`<div class="fp ${INV_FILTER.status===s?"on":""}" data-s="${s}">${s}</div>`).join("");
+  const suppliers=["All"].concat(invDistinct("supplier"));
 
   $("#view").innerHTML=`
     <div class="kpis">
@@ -1903,17 +1931,40 @@ VIEWS.inventory=function(){
       <div class="kpi k-thread"><div class="klab">Low stock</div><div class="kval">${lowCount}</div><div class="ksub">at / below reorder</div></div>
     </div>
     <div class="toolbar">
-      <div class="search"><span class="ico">⌕</span><input id="invq" placeholder="Search code, item, supplier, colour…" value="${esc(INV_FILTER.q)}"></div>
-      <div class="filterpills">${catTabs}</div>
+      <div class="search"><span class="ico">⌕</span><input id="invq" placeholder="Search code, GRN, item, supplier, colour, PO…" value="${esc(INV_FILTER.q)}"></div>
+      <select id="invSup" style="max-width:220px">${suppliers.map(s=>`<option ${s===INV_FILTER.supplier?"selected":""}>${esc(s)}</option>`).join("")}</select>
+      <div class="filterpills">${statusTabs}</div>
     </div>
+    <div class="toolbar"><div class="filterpills">${catTabs}</div></div>
     ${lowCount?`<div class="notice"><b>${lowCount} item${lowCount===1?"":"s"}</b> at or below reorder level — shown in red below.</div>`:""}
     <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · balance = received − issued</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>`;
-  $("#invq").oninput=e=>{ INV_FILTER.q=e.target.value; const b=$("#invq"); VIEWS.inventory(); const n=$("#invq"); if(n){ n.focus(); n.selectionStart=n.selectionEnd=n.value.length; } };
-  $$(".fp").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
+  $("#invq").oninput=e=>{ INV_FILTER.q=e.target.value; VIEWS.inventory(); const n=$("#invq"); if(n){ n.focus(); n.selectionStart=n.selectionEnd=n.value.length; } };
+  $("#invSup").onchange=e=>{ INV_FILTER.supplier=e.target.value; VIEWS.inventory(); };
+  $$(".fp[data-c]").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
+  $$(".fp[data-s]").forEach(f=> f.onclick=()=>{ INV_FILTER.status=f.dataset.s; VIEWS.inventory(); });
 };
+
+/* ---- export current (filtered) inventory to Excel ---- */
+function exportInventory(){
+  if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
+  const rows=invFilteredRows();
+  if(!rows.length){ toast("Nothing to export in this view","warn"); return; }
+  const data=rows.map(it=>({
+    Code:it.code||"", GRN:it.grn||"", Date:it.date||"", Category:it.category||"",
+    Supplier:it.supplier||"", Item:it.item||"", Colour:it.color||"", Unit:it.unit||"",
+    Received:Number(it.received||0), Issued:Number(it.issued||0), Balance:invBalance(it),
+    "Unit price":Number(it.unitPrice||0), Value:invValue(it),
+    PO:it.po||"", Style:it.style||"", Invoice:it.invoice||"", "Reorder":Number(it.reorder||0), Remark:it.remark||""
+  }));
+  const ws=XLSX.utils.json_to_sheet(data);
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Stock");
+  const name="Seam_Stock_"+today()+(INV_FILTER.cat!=="All"?"_"+INV_FILTER.cat:"")+".xlsx";
+  XLSX.writeFile(wb,name);
+  toast("Exported "+rows.length+" items","ok");
+}
 function invCatPill(c){ return {Fabric:"p-blue",Trim:"p-ink",Packing:"p-teal",Accessories:"p-amber",Sample:"p-grey",Other:"p-grey"}[c]||"p-grey"; }
 
 /* ============================================================
@@ -2049,39 +2100,143 @@ async function commitInvImport(){
 }
 
 function editInv(id){
-  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"pcs",date:today()};
-  openModal({title:id?"Edit inventory item":"New inventory item", wide:true, record:r, submitLabel:id?"Save item":"Add item",
+  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today()};
+  openModal({title:id?"Edit inventory item":"New inventory item (GRN)", wide:true, record:r, submitLabel:id?"Save item":"Add item",
     fields:[
-      {name:"code",label:"Code",half:true,placeholder:"e.g. SCF0001 / TRM-001"},
+      {name:"grn",label:"GRN number",half:true,placeholder:"goods received note no.",list:invDistinct("grn")},
+      {name:"code",label:"Code",half:true,placeholder:"e.g. SCF0001 / TRM-001",list:invDistinct("code")},
+      {name:"item",label:"Item name",required:true,list:invDistinct("item")},
+      {name:"color",label:"Colour / spec",half:true,list:invDistinct("color")},
+      {name:"supplier",label:"Supplier",half:true,list:invDistinct("supplier")},
       {name:"category",label:"Category",type:"select",options:INV_CATS,half:true},
-      {name:"item",label:"Item name",required:true},
-      {name:"color",label:"Colour / spec",half:true},
-      {name:"supplier",label:"Supplier",half:true},
-      {name:"unit",label:"Unit",type:"select",options:["pcs","yds","m","kg","roll","cone","set","USD"],half:true},
-      {name:"received",label:"Received qty",type:"number",half:true},
-      {name:"issued",label:"Issued qty",type:"number",half:true},
-      {name:"unitPrice",label:"Unit price (USD)",type:"number",step:"0.001",half:true},
-      {name:"reorder",label:"Reorder level",type:"number",half:true},
-      {name:"date",label:"Date",type:"date",half:true},
-      {name:"po",label:"PO / ref",half:true},
+      {name:"unit",label:"Unit",type:"select",options:["yds","pcs","m","kg","roll","cone","set","USD"],half:true},
+      {name:"received",label:"Received qty",type:"number",half:true,min:0},
+      {name:"issued",label:"Issued qty (total)",type:"number",half:true,min:0},
+      {name:"unitPrice",label:"Unit price (USD)",type:"number",step:"0.001",half:true,min:0},
+      {name:"reorder",label:"Reorder level",type:"number",half:true,min:0},
+      {name:"date",label:"In-house date",type:"date",half:true},
+      {name:"po",label:"PO / ref",half:true,list:invDistinct("po")},
+      {name:"style",label:"Style",half:true,list:invDistinct("style")},
+      {name:"invoice",label:"Invoice no.",half:true,list:invDistinct("invoice")},
       {name:"remark",label:"Remark",type:"textarea",rows:2},
     ],
     onSubmit:async d=>{
-      d.received=Number(d.received||0); d.issued=Number(d.issued||0); d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
+      d.received=Math.max(0,Number(d.received||0)); d.issued=Math.max(0,Number(d.issued||0));
+      d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
+      if(d.issued>d.received){ toast("Issued can't exceed received — stock would go negative","warn"); return; }
       if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
       await save(); closeModal(); VIEWS.inventory(); toast(id?"Item updated":"Item added","ok");
     }});
 }
-function issueInv(id){
-  const it=DB.inventory.find(x=>x.id===id); if(!it) return;
-  openModal({title:"Issue stock — "+(it.item||""), record:{}, submitLabel:"Record issue",
-    fields:[{name:"qty",label:`Quantity to issue (balance ${num(invBalance(it))} ${it.unit||""})`,type:"number",required:true}],
-    onSubmit:async d=>{
-      const q=Number(d.qty||0);
-      if(q<=0){ toast("Enter a quantity","warn"); return; }
-      if(q>invBalance(it)){ toast("More than the balance on hand","warn"); return; }
-      it.issued=Number(it.issued||0)+q; await save(); closeModal(); VIEWS.inventory(); toast("Issued "+num(q)+" "+(it.unit||""),"ok");
-    }});
+
+/* ============================================================
+   FABRIC ISSUE NOTE  (multi-line, never lets stock go negative)
+   ============================================================ */
+function nextIssueNo(){
+  const nums=(DB.issues||[]).map(n=>{ const m=(n.noteNo||"").match(/(\d+)\s*$/); return m?Number(m[1]):0; });
+  const mx=nums.length?Math.max(...nums):0;
+  return "ISS-"+String(mx+1).padStart(4,"0");
+}
+function openIssueNote(){
+  const items=(DB.inventory||[]).filter(i=>invBalance(i)>0).sort((a,b)=>(a.item||"").localeCompare(b.item||""));
+  if(!items.length){ toast("No items with stock to issue","warn"); return; }
+  const optHtml=`<option value="">— select item —</option>`+items.map(i=>`<option value="${i.id}">${esc((i.code?i.code+" · ":"")+i.item+(i.color&&i.color!=="—"?" · "+i.color:"")+"  (bal "+num(invBalance(i))+" "+(i.unit||"")+")")}</option>`).join("");
+  ISSUE_LINES=[{itemId:"",qty:""}];
+  const render=()=>{
+    const lineRows=ISSUE_LINES.map((ln,idx)=>{
+      const it=DB.inventory.find(x=>x.id===ln.itemId);
+      const bal=it?invBalance(it):0;
+      return `<div class="fieldrow" style="grid-template-columns:1fr 120px 90px 30px">
+        <select data-li="${idx}" class="issel">${optHtml.replace(`value="${ln.itemId}"`,`value="${ln.itemId}" selected`)}</select>
+        <input type="number" min="0" class="isqty" data-li="${idx}" value="${ln.qty}" placeholder="qty" style="width:110px">
+        <span class="muted" style="font-size:12px">${it?("bal "+num(bal)):""}</span>
+        <button class="btn sm danger" data-del="${idx}" ${ISSUE_LINES.length>1?"":"style=visibility:hidden"}>✕</button>
+      </div>`;
+    }).join("");
+    $("#issLines").innerHTML=lineRows;
+    $$("#issLines .issel").forEach(s=> s.onchange=e=>{ ISSUE_LINES[+e.target.dataset.li].itemId=e.target.value; render(); });
+    $$("#issLines .isqty").forEach(s=> s.oninput=e=>{ ISSUE_LINES[+e.target.dataset.li].qty=e.target.value; });
+    $$("#issLines [data-del]").forEach(b=> b.onclick=e=>{ ISSUE_LINES.splice(+e.currentTarget.dataset.del,1); render(); });
+  };
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Fabric Issue Note</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="row3">
+        <label class="fld"><span class="lab">Issue Note No *</span><input id="iss_no" value="${esc(nextIssueNo())}"></label>
+        <label class="fld"><span class="lab">Date *</span><input id="iss_date" type="date" value="${today()}"></label>
+        <label class="fld"><span class="lab">Issued to / dept</span><input id="iss_to" placeholder="e.g. Cutting"></label>
+      </div>
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:6px 0">Items to issue</div>
+      <div id="issLines"></div>
+      <button class="btn sm" id="iss_add" style="margin-top:8px">+ Add line</button>
+      <label class="fld" style="margin-top:12px"><span class="lab">Remark</span><input id="iss_remark"></label>
+      <div class="notice" style="margin:0">Stock can never go negative — each quantity must be within the item's balance.</div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="iss_save">Issue &amp; reduce stock</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  render();
+  $("#iss_add").onclick=()=>{ ISSUE_LINES.push({itemId:"",qty:""}); render(); };
+  $("#iss_save").onclick=commitIssueNote;
+}
+let ISSUE_LINES=[];
+async function commitIssueNote(){
+  const noteNo=$("#iss_no").value.trim(), date=$("#iss_date").value, to=$("#iss_to").value.trim(), remark=$("#iss_remark").value.trim();
+  if(!noteNo||!date){ toast("Issue Note No and Date are required","warn"); return; }
+  // build & validate lines
+  const need={}; const lines=[];
+  for(const ln of ISSUE_LINES){
+    if(!ln.itemId) continue;
+    const q=Number(ln.qty||0);
+    if(q<=0){ toast("Enter a quantity for each item line","warn"); return; }
+    need[ln.itemId]=(need[ln.itemId]||0)+q;
+    lines.push({itemId:ln.itemId, qty:q});
+  }
+  if(!lines.length){ toast("Add at least one item line","warn"); return; }
+  // no-negative check (sum per item vs balance)
+  for(const itemId in need){
+    const it=DB.inventory.find(x=>x.id===itemId);
+    if(!it){ toast("An item was not found","warn"); return; }
+    if(need[itemId]>invBalance(it)){ toast(`Not enough stock for ${it.item} — balance ${num(invBalance(it))}`,"warn"); return; }
+  }
+  // apply: increase issued, snapshot line details
+  const snap=lines.map(l=>{ const it=DB.inventory.find(x=>x.id===l.itemId); it.issued=Number(it.issued||0)+l.qty;
+    return {itemId:l.itemId, code:it.code||"", item:it.item||"", color:it.color||"", unit:it.unit||"", qty:l.qty}; });
+  DB.issues.unshift({id:uid("iss"),noteNo,date,to,remark,by:CURRENT?CURRENT.username:"",createdAt:Date.now(),lines:snap});
+  await save(); closeModal(); VIEWS.inventory(); toast("Issued on note "+noteNo,"ok");
+}
+
+VIEWS.issues=function(){
+  setHead("Procurement","Issue Notes",`<button class="btn" onclick="go('inventory')">← Inventory</button> <button class="btn primary" onclick="openIssueNote()">− Fabric Issue</button>`);
+  const list=(DB.issues||[]).slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||b.createdAt-a.createdAt);
+  if(!list.length){ return emptyState("No issue notes yet","Issue fabric from Inventory to record a note here.","openIssueNote()","Create issue note"); }
+  const rows=list.map(n=>{
+    const totQty=(n.lines||[]).reduce((a,l)=>a+Number(l.qty||0),0);
+    const items=(n.lines||[]).map(l=>`${esc(l.item)}${l.color&&l.color!=="—"?" ("+esc(l.color)+")":""} — ${num(l.qty)} ${esc(l.unit||"")}`).join("<br>");
+    return `<tr>
+      <td class="mono strong">${esc(n.noteNo)}</td>
+      <td class="num">${fmtDate(n.date)}</td>
+      <td>${esc(n.to||"—")}</td>
+      <td style="font-size:12.5px">${items}</td>
+      <td class="num">${num(totQty)}</td>
+      <td class="muted">${esc(n.by||"")}</td>
+      <td class="num">${canDelete()?`<button class="btn sm danger" onclick="reverseIssue('${n.id}')">Reverse</button>`:""}</td></tr>`;
+  }).join("");
+  $("#view").innerHTML=`
+    <div class="notice">Each issue note reduced stock. <b>Reverse</b> adds the quantities back and removes the note.</div>
+    <div class="panel"><div class="panel-head"><h3>Issue notes</h3><div class="meta">${list.length} note${list.length===1?"":"s"}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>Note No</th><th class="num">Date</th><th>To</th><th>Items</th><th class="num">Total qty</th><th>By</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+};
+function reverseIssue(id){
+  const n=(DB.issues||[]).find(x=>x.id===id); if(!n) return;
+  confirmModal("Reverse issue note",`Add back the issued quantities of ${esc(n.noteNo)} and remove this note?`,async()=>{
+    (n.lines||[]).forEach(l=>{ const it=DB.inventory.find(x=>x.id===l.itemId); if(it) it.issued=Math.max(0,Number(it.issued||0)-Number(l.qty||0)); });
+    DB.issues=DB.issues.filter(x=>x.id!==id); await save(); closeModal(); VIEWS.issues(); toast("Issue reversed — stock restored","ok");
+  },false);
 }
 function delInv(id){
   confirmModal("Delete item","Moves to the Recycle Bin (kept 30 days).",async()=>{
