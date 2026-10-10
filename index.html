@@ -3,6 +3,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Seam — Garment Manufacturing ERP</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>try{ if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"; }catch(e){}</script>
 <!-- Shared database (optional). firebase-config.js fills window.FIREBASE_CONFIG when hosted. -->
 <script>window.FIREBASE_CONFIG = null;</script>
 <script src="firebase-config.js" onerror="void 0"></script>
@@ -2079,14 +2081,129 @@ function fileToBase64(file){
 }
 async function handlePOFile(file){
   if(file.type!=="application/pdf" && !/\.pdf$/i.test(file.name)){ toast("Please drop a PDF file","warn"); return; }
-  importLoading("Extracting order from "+file.name);
+  importLoading("Reading "+file.name);
+  // 1) Free, in-browser reader (pdf.js) tuned to the Active Plus / Shiran PO format.
   try{
-    const b64=await fileToBase64(file);
-    const data=await extractPOviaAI(b64);
-    reviewImport(data);
-  }catch(err){
-    importError(err && err.message ? err.message : "Extraction failed");
+    if(window.pdfjsLib){
+      const layout=await pdfExtractLayout(file);
+      const data=parseShiranPO(layout);
+      if(data && data.poNumber && Number(data.quantity)>0){ reviewImport(data); return; }
+      // partial parse — still show what we got so the user can complete it
+      if(data && (data.poNumber || data.garment)){ reviewImport(data); return; }
+    }
+  }catch(e){ console.error("Local PO parse failed:", e); }
+  // 2) Optional AI fallback if a proxy is configured (not required)
+  try{
+    if((typeof window!=="undefined" && window.AI_PROXY_URL) || HAS_STORE){
+      const b64=await fileToBase64(file);
+      const data=await extractPOviaAI(b64);
+      reviewImport(data); return;
+    }
+  }catch(err){ importError(err && err.message ? err.message : "Couldn't read the PO automatically."); return; }
+  importError("Couldn't read this PO automatically. It may be a scan or a different layout. Enter it manually or load the sample.");
+}
+
+/* ---- pdf.js: extract page text as visual rows (like a printout) ---- */
+async function pdfExtractLayout(file){
+  const buf=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:buf}).promise;
+  const pages=[];
+  const maxP=Math.min(pdf.numPages, 10);
+  for(let p=1;p<=maxP;p++){
+    const page=await pdf.getPage(p);
+    const tc=await page.getTextContent();
+    // group items into lines by y, order by x
+    const rows={};
+    tc.items.forEach(it=>{
+      if(!it.str || !it.str.trim()) return;
+      const x=it.transform[4], y=Math.round(it.transform[5]);
+      // bucket y to nearest 2px to tolerate tiny baseline shifts
+      const key=Math.round(y/2)*2;
+      (rows[key]=rows[key]||[]).push({x,s:it.str});
+    });
+    const ys=Object.keys(rows).map(Number).sort((a,b)=>b-a); // top→bottom (pdf y is bottom-up)
+    const lines=ys.map(k=> rows[k].sort((a,b)=>a.x-b.x).map(o=>o.s).join(" ").replace(/\s+/g," ").trim());
+    pages.push(lines);
   }
+  return pages;   // array of pages, each an array of line strings
+}
+
+/* ---- parser for the Active Plus Trading / Shiran Clothing PO template ---- */
+function parseShiranPO(pages){
+  const page1=pages[0]||[];
+  const allLines=pages.flat();
+  const text=allLines.join("\n");
+  const find=(re)=>{ const m=text.match(re); return m?(m[1]!=null?m[1]:m[0]).trim():""; };
+  const mdyToISO=(s)=>{ const m=(s||"").match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/); if(!m) return ""; let[_,mm,dd,yy]=m; if(yy.length===2) yy="20"+yy; return `${yy}-${mm.padStart(2,"0")}-${dd.padStart(2,"0")}`; };
+
+  // PO number: first standalone 6-digit number near the top
+  let poNumber=""; for(const ln of page1.slice(0,12)){ const m=ln.match(/\b(\d{6})\b/); if(m){ poNumber=m[1]; break; } }
+  if(!poNumber){ const m=text.match(/\b(\d{6})\b/); if(m) poNumber=m[1]; }
+
+  // Customer / buyer
+  const custLine=find(/CUSTOMER:\s*(.+?)\s+(?:ETD:|$)/);
+  let buyer="";
+  if(custLine && !/STOCK|ZSTOCK/i.test(custLine)){
+    buyer=custLine.replace(/^[A-Z0-9]{3,6}\s*-\s*/,"").trim();   // strip leading code "M010A - "
+  } else {
+    // top-of-page brand (text before "PURCHASE ORDER" on line 1)
+    const top=(page1[0]||"").split(/PURCHASE ORDER/i)[0].trim();
+    buyer=(/@@/.test(top)||!top)?"BCI Brands LLC":top;
+  }
+
+  const quantity=Number((find(/TOTAL QTY:\s*([\d,]+)\s*EA/)||"0").replace(/,/g,""))||0;
+  const unitPrice=Number((find(/([\d,]+\.\d{2,4})\s*USD/)||"0").replace(/,/g,""))||0;
+  const style=find(/STYLE#\s*([A-Za-z0-9\-]+)/);
+  const body=find(/BODY#\s*:?\s*([A-Za-z0-9\-]+)/);
+  const hts=find(/HTS#\s*([\d.]{6,})/);
+  const division=find(/DIVISION:\s*([A-Za-z0-9]+)/);
+  const theme=find(/THEME[ \t]+([A-Za-z0-9]+)/);
+  const shipVia=find(/SHIP VIA:\s*([A-Za-z]+)/);
+  const shipTerms=find(/PURCHASE TERMS:\s*([A-Za-z0-9 ]+?)\s{2,}/)||find(/PURCHASE TERMS:\s*([A-Za-z0-9]+(?:\s+\d+\s+DAYS)?)/);
+  const etd=mdyToISO(find(/ETD:\s*(\d{1,2}\/\d{1,2}\/\d{4})/));
+  const eta=mdyToISO(find(/ETA:\s*(\d{1,2}\/\d{1,2}\/\d{4})/));
+  const issue=mdyToISO(find(/ISSUE DATE:\s*(\d{1,2}\/\d{1,2}\/\d{4})/));
+  const fabricPo=find(/Fabric PO #\s*([0-9 \/]+)/);
+  let garment=find(/DESCRIPTION:\s*(.+?)\s+(?:BRAND|PACK|CONTENT|$)/);
+  let color=find(/Exenta Color\s*-\s*Descr\s*(.+?)\s+(?:NRF|LABEL|CONTENT|$)/);
+  if(color) color=color.replace(/\s+Color.*$/,"").trim();
+
+  // size breakdown: aggregate every SIZES row with the QTY row beneath it
+  const sizeBreakdown={};
+  for(let i=0;i<allLines.length;i++){
+    if(/^SIZES\b/.test(allLines[i])){
+      const sizes=allLines[i].replace(/^SIZES/,"").replace(/TOTAL.*$/,"").trim().split(/\s+/).filter(Boolean);
+      // the QTY row follows within a few lines
+      let j=-1; for(let k=i+1;k<Math.min(i+5,allLines.length);k++){ if(/^QTY\b/.test(allLines[k])){ j=k; break; } }
+      if(j>=0){
+        const nums=allLines[j].replace(/^QTY/,"").trim().split(/\s+/).map(x=>Number(x.replace(/,/g,""))).filter(n=>!isNaN(n));
+        // last number on the QTY row is that block's total → drop it when counts line up
+        const qtys=(nums.length===sizes.length+1)?nums.slice(0,-1):nums;
+        sizes.forEach((sz,k)=>{ if(qtys[k]!=null) sizeBreakdown[sz]=(sizeBreakdown[sz]||0)+qtys[k]; });
+      }
+    }
+  }
+  const sizes=Object.keys(sizeBreakdown).join(", ");
+
+  // count distinct style blocks (multi-style PO)
+  const styleCount=(text.match(/STYLE#/g)||[]).length;
+  const noteBits=[];
+  if(styleCount>1) noteBits.push(styleCount+" styles on this PO — first style shown; review each");
+  if(division) noteBits.push("Division "+division);
+  if(theme) noteBits.push("Theme "+theme);
+  if(shipVia) noteBits.push("Ship via "+shipVia);
+  if(fabricPo) noteBits.push("Fabric PO "+fabricPo.trim());
+  if(body) noteBits.push("Body# "+body);
+
+  return {
+    poNumber, buyer, buyerCountry:"United States", vendor:"Active Plus Trading-FZCO",
+    style, garment: garment? garment.replace(/\s+/g," ").replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase()) : "",
+    fabric:"", color, quantity, unitPrice, currency:"USD",
+    orderDate:issue||today(), deliveryDate:etd||"", eta:eta||"",
+    shipTerms:(shipTerms||"").trim(), shipVia, hts, retail:0,
+    sizes, sizeBreakdown, notes:noteBits.join(" · "),
+    materials:[]
+  };
 }
 async function extractPOviaAI(base64){
   const prompt=`You are a data-extraction engine for a garment manufacturing ERP. Read the attached buyer purchase order PDF and return ONLY a JSON object (no markdown fences, no commentary) with EXACTLY these keys:
