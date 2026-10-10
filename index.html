@@ -1873,15 +1873,14 @@ const INV_CATS=["Fabric","Trim","Packing","Accessories","Sample","Other"];
 function invBalance(it){ return Number(it.received||0)-Number(it.issued||0); }
 function invValue(it){ return invBalance(it)*Number(it.unitPrice||0); }
 function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)<=r; }
-const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All"};
+const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All",hideZero:true};
 
 function invFilteredRows(){
   let rows=(DB.inventory||[]).slice();
   if(INV_FILTER.cat!=="All") rows=rows.filter(i=>i.category===INV_FILTER.cat);
   if(INV_FILTER.supplier!=="All") rows=rows.filter(i=>(i.supplier||"")===INV_FILTER.supplier);
-  if(INV_FILTER.status==="In stock") rows=rows.filter(i=>invBalance(i)>0);
-  else if(INV_FILTER.status==="Low") rows=rows.filter(invLow);
-  else if(INV_FILTER.status==="Out") rows=rows.filter(i=>invBalance(i)<=0);
+  if(INV_FILTER.status==="Low") rows=rows.filter(invLow);
+  if(INV_FILTER.hideZero) rows=rows.filter(i=>invBalance(i)>0);   // auto-hide zero-balance stock
   if(INV_FILTER.q){ const q=INV_FILTER.q.toLowerCase(); rows=rows.filter(i=>
     (i.code||"").toLowerCase().includes(q)||(i.grn||"").toLowerCase().includes(q)||(i.item||"").toLowerCase().includes(q)||
     (i.supplier||"").toLowerCase().includes(q)||(i.color||"").toLowerCase().includes(q)||(i.po||"").toLowerCase().includes(q)); }
@@ -1894,11 +1893,13 @@ VIEWS.inventory=function(){
     `<button class="btn" onclick="exportInventory()">⬆ Export Excel</button> `+
     `<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> `+
     `<button class="btn" onclick="go('issues')">Issue Notes</button> `+
-    `<button class="btn" onclick="openIssueNote()">− Fabric Issue</button> `+
+    `<button class="btn danger" onclick="openIssueNote()">− Fabric Issue</button> `+
     `<button class="btn primary" onclick="editInv()">+ Add item</button>`);
   const all=DB.inventory||[];
   const totalVal=all.reduce((a,it)=>a+invValue(it),0);
-  const fabricVal=all.filter(i=>i.category==="Fabric").reduce((a,it)=>a+invValue(it),0);
+  const fabrics=all.filter(i=>i.category==="Fabric");
+  const fabricVal=fabrics.reduce((a,it)=>a+invValue(it),0);
+  const fabricYds=fabrics.reduce((a,it)=>a+Math.max(0,invBalance(it)),0);
   const accVal=all.filter(i=>["Trim","Packing","Accessories"].includes(i.category)).reduce((a,it)=>a+invValue(it),0);
   const lowCount=all.filter(invLow).length;
 
@@ -1920,24 +1921,25 @@ VIEWS.inventory=function(){
   }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No items match these filters.</td></tr>`;
 
   const catTabs=["All"].concat(INV_CATS).map(c=>`<div class="fp ${INV_FILTER.cat===c?"on":""}" data-c="${c}">${c}</div>`).join("");
-  const statusTabs=["All","In stock","Low","Out"].map(s=>`<div class="fp ${INV_FILTER.status===s?"on":""}" data-s="${s}">${s}</div>`).join("");
+  const statusTabs=["All","Low"].map(s=>`<div class="fp ${INV_FILTER.status===s?"on":""}" data-s="${s}">${s==="Low"?"Low stock":"All"}</div>`).join("");
   const suppliers=["All"].concat(invDistinct("supplier"));
 
   $("#view").innerHTML=`
     <div class="kpis">
-      <div class="kpi"><div class="klab">Stock value (bal × price)</div><div class="kval" style="font-size:23px">${money(totalVal)}</div><div class="ksub">${all.length} items</div></div>
-      <div class="kpi k-chalk"><div class="klab">Fabric value</div><div class="kval" style="font-size:23px">${money(fabricVal)}</div><div class="ksub">on hand</div></div>
-      <div class="kpi k-green"><div class="klab">Trim / packing / acc.</div><div class="kval" style="font-size:23px">${money(accVal)}</div><div class="ksub">on hand</div></div>
+      <div class="kpi k-chalk"><div class="klab">Fabric on hand (yds)</div><div class="kval" style="font-size:23px">${num(Math.round(fabricYds))}</div><div class="ksub">${fabrics.length} fabric items</div></div>
+      <div class="kpi k-green"><div class="klab">Fabric value</div><div class="kval" style="font-size:23px">${money(fabricVal)}</div><div class="ksub">balance × price</div></div>
+      <div class="kpi"><div class="klab">Total stock value</div><div class="kval" style="font-size:23px">${money(totalVal)}</div><div class="ksub">${all.length} items (all categories)</div></div>
       <div class="kpi k-thread"><div class="klab">Low stock</div><div class="kval">${lowCount}</div><div class="ksub">at / below reorder</div></div>
     </div>
     <div class="toolbar">
       <div class="search"><span class="ico">⌕</span><input id="invq" placeholder="Search code, GRN, item, supplier, colour, PO…" value="${esc(INV_FILTER.q)}"></div>
       <select id="invSup" style="max-width:220px">${suppliers.map(s=>`<option ${s===INV_FILTER.supplier?"selected":""}>${esc(s)}</option>`).join("")}</select>
       <div class="filterpills">${statusTabs}</div>
+      <div class="fp ${INV_FILTER.hideZero?"on":""}" id="invHideZero" title="Hide items with 0 balance">${INV_FILTER.hideZero?"✓ ":""}Hide zero-stock</div>
     </div>
     <div class="toolbar"><div class="filterpills">${catTabs}</div></div>
     ${lowCount?`<div class="notice"><b>${lowCount} item${lowCount===1?"":"s"}</b> at or below reorder level — shown in red below.</div>`:""}
-    <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · balance = received − issued</div></div>
+    <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · balance = received − issued${INV_FILTER.hideZero?" · zero-stock hidden":""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>`;
@@ -1945,6 +1947,7 @@ VIEWS.inventory=function(){
   $("#invSup").onchange=e=>{ INV_FILTER.supplier=e.target.value; VIEWS.inventory(); };
   $$(".fp[data-c]").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
   $$(".fp[data-s]").forEach(f=> f.onclick=()=>{ INV_FILTER.status=f.dataset.s; VIEWS.inventory(); });
+  const hz=$("#invHideZero"); if(hz) hz.onclick=()=>{ INV_FILTER.hideZero=!INV_FILTER.hideZero; VIEWS.inventory(); };
 };
 
 /* ---- export current (filtered) inventory to Excel ---- */
@@ -2140,23 +2143,37 @@ function nextIssueNo(){
 function openIssueNote(){
   const items=(DB.inventory||[]).filter(i=>invBalance(i)>0).sort((a,b)=>(a.item||"").localeCompare(b.item||""));
   if(!items.length){ toast("No items with stock to issue","warn"); return; }
-  const optHtml=`<option value="">— select item —</option>`+items.map(i=>`<option value="${i.id}">${esc((i.code?i.code+" · ":"")+i.item+(i.color&&i.color!=="—"?" · "+i.color:"")+"  (bal "+num(invBalance(i))+" "+(i.unit||"")+")")}</option>`).join("");
+  // label → itemId map for a type-to-filter datalist
+  const labelOf=i=>(i.code?i.code+" · ":"")+i.item+(i.color&&i.color!=="—"?" · "+i.color:"")+"  (bal "+num(invBalance(i))+" "+(i.unit||"")+")";
+  const labelToId={}; items.forEach(i=>{ labelToId[labelOf(i)]=i.id; });
+  const dlOpts=items.map(i=>`<option value="${esc(labelOf(i))}">`).join("");
   ISSUE_LINES=[{itemId:"",qty:""}];
   const render=()=>{
     const lineRows=ISSUE_LINES.map((ln,idx)=>{
       const it=DB.inventory.find(x=>x.id===ln.itemId);
       const bal=it?invBalance(it):0;
-      return `<div class="fieldrow" style="grid-template-columns:1fr 120px 90px 30px">
-        <select data-li="${idx}" class="issel">${optHtml.replace(`value="${ln.itemId}"`,`value="${ln.itemId}" selected`)}</select>
-        <input type="number" min="0" class="isqty" data-li="${idx}" value="${ln.qty}" placeholder="qty" style="width:110px">
-        <span class="muted" style="font-size:12px">${it?("bal "+num(bal)):""}</span>
+      return `<div class="fieldrow" style="grid-template-columns:1fr 120px 96px 30px">
+        <input class="issel" data-li="${idx}" list="issDL" placeholder="type to search item…" value="${esc(it?labelOf(it):(ln.typed||""))}" autocomplete="off">
+        <input type="number" min="0" class="isqty" data-li="${idx}" value="${ln.qty}" placeholder="qty" style="width:110px" ${it?`max="${bal}"`:""}>
+        <span class="muted" style="font-size:12px;${it&&Number(ln.qty)>bal?"color:var(--red)":""}">${it?("bal "+num(bal)):""}</span>
         <button class="btn sm danger" data-del="${idx}" ${ISSUE_LINES.length>1?"":"style=visibility:hidden"}>✕</button>
       </div>`;
     }).join("");
     $("#issLines").innerHTML=lineRows;
-    $$("#issLines .issel").forEach(s=> s.onchange=e=>{ ISSUE_LINES[+e.target.dataset.li].itemId=e.target.value; render(); });
-    $$("#issLines .isqty").forEach(s=> s.oninput=e=>{ ISSUE_LINES[+e.target.dataset.li].qty=e.target.value; });
+    $$("#issLines .issel").forEach(s=> s.oninput=e=>{
+      const v=e.target.value, li=+e.target.dataset.li;
+      ISSUE_LINES[li].typed=v;
+      const id=labelToId[v];
+      if(id){ ISSUE_LINES[li].itemId=id; render(); setTimeout(()=>{ const q=$(`#issLines .isqty[data-li="${li}"]`); if(q) q.focus(); },0); }
+      else { ISSUE_LINES[li].itemId=""; }
+    });
+    $$("#issLines .isqty").forEach(s=> s.oninput=e=>{ ISSUE_LINES[+e.target.dataset.li].qty=e.target.value; const li=+e.target.dataset.li; const it=DB.inventory.find(x=>x.id===ISSUE_LINES[li].itemId); if(it){ const sp=e.target.parentElement.querySelector("span"); if(sp) sp.style.color=(Number(e.target.value)>invBalance(it))?"var(--red)":""; } updIssTotals(); });
     $$("#issLines [data-del]").forEach(b=> b.onclick=e=>{ ISSUE_LINES.splice(+e.currentTarget.dataset.del,1); render(); });
+    updIssTotals();
+  };
+  const updIssTotals=()=>{
+    let q=0,v=0; ISSUE_LINES.forEach(ln=>{ const it=DB.inventory.find(x=>x.id===ln.itemId); const n=Number(ln.qty||0); if(it&&n>0){ q+=n; v+=n*Number(it.unitPrice||0); } });
+    const el=$("#issTotalVal"); if(el) el.textContent=num(q)+" yds · "+money(v,"USD");
   };
   $("#modal").className="modal wide";
   $("#modal").innerHTML=`
@@ -2168,10 +2185,14 @@ function openIssueNote(){
         <label class="fld"><span class="lab">Issued to / dept</span><input id="iss_to" placeholder="e.g. Cutting"></label>
       </div>
       <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:6px 0">Items to issue</div>
+      <datalist id="issDL">${dlOpts}</datalist>
       <div id="issLines"></div>
       <button class="btn sm" id="iss_add" style="margin-top:8px">+ Add line</button>
       <label class="fld" style="margin-top:12px"><span class="lab">Remark</span><input id="iss_remark"></label>
-      <div class="notice" style="margin:0">Stock can never go negative — each quantity must be within the item's balance.</div>
+      <div id="issTotals" class="panel-pad" style="background:var(--surface-2);border-radius:10px;display:flex;justify-content:space-between;align-items:center;margin-top:10px">
+        <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.06em">Total issue</span>
+        <span class="strong" style="font-size:16px" id="issTotalVal">0 · $0.00</span></div>
+      <div class="notice" style="margin:10px 0 0">Stock can never go negative — each quantity must be within the item's balance.</div>
     </div>
     <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
       <button class="btn primary" id="iss_save">Issue &amp; reduce stock</button></div>`;
@@ -2209,7 +2230,7 @@ async function commitIssueNote(){
 }
 
 VIEWS.issues=function(){
-  setHead("Procurement","Issue Notes",`<button class="btn" onclick="go('inventory')">← Inventory</button> <button class="btn primary" onclick="openIssueNote()">− Fabric Issue</button>`);
+  setHead("Procurement","Issue Notes",`<button class="btn" onclick="go('inventory')">← Inventory</button> <button class="btn danger" onclick="openIssueNote()">− Fabric Issue</button>`);
   const list=(DB.issues||[]).slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")||b.createdAt-a.createdAt);
   if(!list.length){ return emptyState("No issue notes yet","Issue fabric from Inventory to record a note here.","openIssueNote()","Create issue note"); }
   const rows=list.map(n=>{
