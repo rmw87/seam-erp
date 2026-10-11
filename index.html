@@ -478,7 +478,15 @@ function shipPill(s){ return {Booked:"p-blue","In Transit":"p-amber",Delivered:"
 function pill(text,cls){ return `<span class="pill ${cls}"><span class="dot"></span>${esc(text)}</span>`; }
 
 /* ---- derived helpers ---- */
-function poValue(po){ return Number(po.quantity||0)*Number(po.unitPrice||0); }
+function poLines(po){ return Array.isArray(po.lines)?po.lines:[]; }
+function poValue(po){
+  const L=poLines(po);
+  if(L.length) return L.reduce((s,l)=>s+Number(l.qty||0)*Number(l.price||0),0);
+  return Number(po.quantity||0)*Number(po.unitPrice||0);
+}
+function poAvgPrice(po){ const q=Number(po.quantity||0); return q? poValue(po)/q : Number(po.unitPrice||0); }
+function poPriceSet(po){ return [...new Set(poLines(po).map(l=>Number(l.price)).filter(x=>x>0))]; }
+function poHasMultiPrice(po){ return poLines(po).length>1 && poPriceSet(po).length>1; }
 function bomFor(poId){ return DB.bom.filter(m=>m.poId===poId); }
 function materialProgress(poId){
   const items=bomFor(poId); if(!items.length) return {pct:0,done:0,total:0};
@@ -1134,7 +1142,7 @@ function openPO(id){
   $("#view").innerHTML = `
   <div class="kpis">
     <div class="kpi"><div class="klab">Order qty</div><div class="kval">${num(p.quantity)}</div><div class="ksub">${esc(p.colors||"")}</div></div>
-    <div class="kpi k-green"><div class="klab">Order value</div><div class="kval" style="font-size:23px">${money(poValue(p),p.currency)}</div><div class="ksub">@ ${money(p.unitPrice,p.currency)}/pc</div></div>
+    <div class="kpi k-green"><div class="klab">Order value</div><div class="kval" style="font-size:23px">${money(poValue(p),p.currency)}</div><div class="ksub">${poHasMultiPrice(p)?("avg "+money(poAvgPrice(p),p.currency)+"/pc · mixed"):("@ "+money(p.unitPrice,p.currency)+"/pc")}</div></div>
     <div class="kpi k-thread"><div class="klab">Materials received</div><div class="kval">${mp.pct}%</div><div class="ksub">${mp.done}/${mp.total} lines</div></div>
     <div class="kpi k-chalk"><div class="klab">Production</div><div class="kval">${pp}%</div><div class="ksub">${esc(currentStage(p))}</div></div>
   </div>
@@ -1149,6 +1157,8 @@ function openPO(id){
     <div class="panel-body"><table>
       <thead><tr><th>Material</th><th>Type</th><th class="num">Required</th><th>Supplier</th><th>Status</th><th class="num">ETA</th><th></th></tr></thead>
       <tbody>${matRows}</tbody></table></div></div>
+
+  ${poPriceBreakdownHTML(p)}
 
   <div class="grid2">
     <div class="panel"><div class="panel-head"><h3>Order details</h3></div><div class="panel-pad">
@@ -1178,6 +1188,27 @@ function openPO(id){
   </div>`;
 }
 function detailLine(k,v){ return `<div class="stat-line"><span class="muted">${esc(k)}</span><span class="strong">${esc(v||"—")}</span></div>`; }
+function poPriceBreakdownHTML(p){
+  const L=poLines(p);
+  if(!poHasMultiPrice(p)) return "";
+  const rows=L.map((l,idx)=>`<tr>
+      <td class="strong">${esc(l.color||l.style||("Line "+(idx+1)))}${l.label?` <span class="muted">· ${esc(l.label)}</span>`:""}${l.pack?` <span class="muted">· ${esc(l.pack)}</span>`:""}</td>
+      <td class="num">${num(l.qty)}</td>
+      <td class="num"><input type="number" step="0.0001" min="0" value="${Number(l.price||0)}" style="width:96px;text-align:right" onchange="updatePOLinePrice('${p.id}',${idx},this.value)"></td>
+      <td class="num">${money(Number(l.qty||0)*Number(l.price||0),p.currency)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h3>Price breakdown</h3><div class="meta">this PO has lines at different prices — edit a unit price to correct it</div></div>
+    <div class="panel-body"><table>
+      <thead><tr><th>Line</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Line value</th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td class="strong">Total</td><td class="num strong">${num(p.quantity)}</td><td class="num strong">avg ${money(poAvgPrice(p),p.currency)}</td><td class="num strong">${money(poValue(p),p.currency)}</td></tr></tfoot>
+    </table></div></div>`;
+}
+async function updatePOLinePrice(poId,idx,val){
+  const p=DB.pos.find(x=>x.id===poId); if(!p||!Array.isArray(p.lines)||!p.lines[idx]) return;
+  p.lines[idx].price=Number(val||0);
+  const ps=poPriceSet(p); if(ps.length===1) p.unitPrice=ps[0];
+  await save(); openPO(poId); toast("Price updated","ok");
+}
 function seamHTML(p){
   const prod=p.production||{}; const cur=currentStage(p); const target=Number(p.quantity||0);
   return `<div class="seamtrack">`+STAGES.map(s=>{
@@ -2479,8 +2510,7 @@ function parseShiranPO(pages){
     buyer=(/@@/.test(top)||!top)?"BCI Brands LLC":top;
   }
 
-  const quantity=Number((find(/TOTAL QTY:\s*([\d,]+)\s*EA/)||"0").replace(/,/g,""))||0;
-  const unitPrice=Number((find(/([\d,]+\.\d{2,4})\s*USD/)||"0").replace(/,/g,""))||0;
+  const headerQty=Number((find(/TOTAL QTY:\s*([\d,]+)\s*EA/)||"0").replace(/,/g,""))||0;
   const style=find(/STYLE#\s*([A-Za-z0-9\-]+)/);
   const body=find(/BODY#\s*:?\s*([A-Za-z0-9\-]+)/);
   const hts=find(/HTS#\s*([\d.]{6,})/);
@@ -2513,10 +2543,47 @@ function parseShiranPO(pages){
   }
   const sizes=Object.keys(sizeBreakdown).join(", ");
 
-  // count distinct style blocks (multi-style PO)
-  const styleCount=(text.match(/STYLE#/g)||[]).length;
+  // ----- order lines: one per STYLE# block, each with its OWN price & quantity -----
+  // (some POs repeat the same style/colour at different prices — e.g. GOH vs Flat pack)
+  const lines=[];
+  for(let i=0;i<allLines.length;i++){
+    const sm=allLines[i].match(/STYLE#\s*([A-Za-z0-9\-]+)/);
+    if(!sm) continue;                              // only "STYLE#" blocks (BOM uses "STYLE:")
+    const lstyle=sm[1];
+    const pm=allLines[i].match(/([\d,]+\.\d{2,4})\s*USD/);   // price sits on the STYLE# line
+    let lprice=pm?Number(pm[1].replace(/,/g,""))||0:0;
+    let lqty=0,lcolor="",llabel="",lpack="";
+    for(let k=i+1;k<allLines.length;k++){
+      if(/STYLE#/.test(allLines[k])) break;        // reached the next block
+      if(!lprice){ const pm2=allLines[k].match(/([\d,]+\.\d{2,4})\s*USD/); if(pm2) lprice=Number(pm2[1].replace(/,/g,""))||0; }
+      if(!lcolor){ const cm=allLines[k].match(/Exenta Color\s*-\s*Descr\s*(.+?)\s+(?:NRF|LABEL|CONTENT|$)/); if(cm) lcolor=cm[1].replace(/\s+Color.*$/,"").trim(); }
+      if(!llabel){ const lm=allLines[k].match(/LABEL[ \t]+([A-Za-z0-9]+)/); if(lm) llabel=lm[1]; }
+      if(!lpack){ const pkm=allLines[k].match(/PACK\s*:?\s*([A-Za-z0-9]+)/); if(pkm) lpack=pkm[1]; }
+      if(/^QTY\b/.test(allLines[k])){
+        const nums=allLines[k].replace(/^QTY/,"").trim().split(/\s+/).map(x=>Number(x.replace(/,/g,""))).filter(n=>!isNaN(n));
+        if(nums.length){ const last=nums[nums.length-1], rest=nums.slice(0,-1).reduce((a,b)=>a+b,0);
+          lqty=(nums.length>1 && Math.abs(last-rest)<0.5)?last:nums.reduce((a,b)=>a+b,0); }
+        break;                                     // first QTY row after STYLE# is this block's
+      }
+    }
+    lines.push({style:lstyle,color:lcolor,label:llabel,pack:lpack,price:lprice,qty:lqty});
+  }
+  // any line whose price didn't parse → fall back to the first price on the PO
+  const firstPrice=(lines.find(l=>l.price>0)||{}).price||Number((find(/([\d,]+\.\d{2,4})\s*USD/)||"0").replace(/,/g,""))||0;
+  lines.forEach(l=>{ if(!l.price) l.price=firstPrice; });
+
+  const lineQtySum=lines.reduce((s,l)=>s+Number(l.qty||0),0);
+  const quantity=headerQty||lineQtySum||0;
+  const priceSet=[...new Set(lines.map(l=>l.price).filter(p=>p>0))];
+  const unitPrice=priceSet.length===1?priceSet[0]:(firstPrice||0);
+  const colorList=[...new Set(lines.map(l=>l.color).filter(Boolean))];
+  if(colorList.length) color=colorList.join(", ");
+  const styleList=[...new Set(lines.map(l=>l.style).filter(Boolean))];
+
   const noteBits=[];
-  if(styleCount>1) noteBits.push(styleCount+" styles on this PO — first style shown; review each");
+  if(priceSet.length>1) noteBits.push(priceSet.length+" prices: "+priceSet.map(p=>"$"+p.toFixed(2)).join(" / ")+" — see price breakdown");
+  if(styleList.length>1) noteBits.push(styleList.length+" styles on this PO ("+styleList.join(", ")+")");
+  if(Math.abs(lineQtySum-headerQty)>0.5 && headerQty && lineQtySum) noteBits.push("qty check: lines total "+num(lineQtySum)+" vs header "+num(headerQty));
   if(division) noteBits.push("Division "+division);
   if(theme) noteBits.push("Theme "+theme);
   if(shipVia) noteBits.push("Ship via "+shipVia);
@@ -2526,7 +2593,7 @@ function parseShiranPO(pages){
   return {
     poNumber, buyer, buyerCountry:"United States", vendor:"Active Plus Trading-FZCO",
     style, garment: garment? garment.replace(/\s+/g," ").replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase()) : "",
-    fabric:"", color, quantity, unitPrice, currency:"USD",
+    fabric:"", color, quantity, unitPrice, lines, currency:"USD",
     orderDate:issue||today(), deliveryDate:etd||"", eta:eta||"",
     shipTerms:(shipTerms||"").trim(), shipVia, hts, retail:0,
     sizes, sizeBreakdown, notes:noteBits.join(" · "),
@@ -2535,8 +2602,8 @@ function parseShiranPO(pages){
 }
 async function extractPOviaAI(base64){
   const prompt=`You are a data-extraction engine for a garment manufacturing ERP. Read the attached buyer purchase order PDF and return ONLY a JSON object (no markdown fences, no commentary) with EXACTLY these keys:
-{"poNumber":string,"buyer":string,"buyerCountry":string,"vendor":string,"style":string,"garment":string,"fabric":string,"color":string,"quantity":number,"unitPrice":number,"currency":string,"orderDate":"YYYY-MM-DD","deliveryDate":"YYYY-MM-DD","eta":"YYYY-MM-DD","shipTerms":string,"shipVia":string,"hts":string,"retail":number,"sizes":string,"sizeBreakdown":{"<size>":number},"notes":string,"materials":[{"material":string,"type":"Fabric|Thread|Trim|Packaging|Other","color":string,"supplier":string,"unit":string}]}
-Rules: deliveryDate = the ETD (ship) date. buyer = the CUSTOMER/retailer the goods are made for. garment = the style description in Title Case. quantity = total order quantity. unitPrice = the FOB/DDP unit price. Combine duplicate material rows. Use "" or 0 when a value is absent. Return only the JSON object.`;
+{"poNumber":string,"buyer":string,"buyerCountry":string,"vendor":string,"style":string,"garment":string,"fabric":string,"color":string,"quantity":number,"unitPrice":number,"lines":[{"style":string,"color":string,"label":string,"pack":string,"price":number,"qty":number}],"currency":string,"orderDate":"YYYY-MM-DD","deliveryDate":"YYYY-MM-DD","eta":"YYYY-MM-DD","shipTerms":string,"shipVia":string,"hts":string,"retail":number,"sizes":string,"sizeBreakdown":{"<size>":number},"notes":string,"materials":[{"material":string,"type":"Fabric|Thread|Trim|Packaging|Other","color":string,"supplier":string,"unit":string}]}
+Rules: deliveryDate = the ETD (ship) date. buyer = the CUSTOMER/retailer the goods are made for. garment = the style description in Title Case. quantity = total order quantity. lines = ONE entry per STYLE# order block, each carrying that block's own DDP/FOB unit price and that block's total quantity (a PO may repeat the same style/colour at different prices, e.g. GOH vs Flat pack — keep them as separate lines). unitPrice = the price when all lines share one price, else the first line's price. Combine duplicate material rows. Use "" or 0 when a value is absent. Return only the JSON object.`;
   let resp;
   if(HAS_STORE){
     // Inside claude.ai — Claude's built-in AI service (no key needed)
@@ -2609,6 +2676,13 @@ function reviewImport(d){
   const sb=d.sizeBreakdown||{};
   const sbHtml=Object.keys(sb).length?`<div style="grid-column:1/-1;margin-top:4px"><div class="k" style="margin-bottom:5px">Size breakdown (${num(d.quantity)} total)</div>
     <div style="display:flex;gap:14px;flex-wrap:wrap">${Object.entries(sb).map(([s,q])=>`<span class="matchip"><b>${esc(s)}</b> ${num(q)}</span>`).join("")}</div></div>`:"";
+  const dLines=Array.isArray(d.lines)?d.lines:[];
+  const dPrices=[...new Set(dLines.map(l=>Number(l.price)).filter(p=>p>0))];
+  const dMulti=dLines.length>1 && dPrices.length>1;
+  const dValue=dLines.length?dLines.reduce((s,l)=>s+Number(l.qty||0)*Number(l.price||0),0):Number(d.quantity||0)*Number(d.unitPrice||0);
+  const priceCell=dMulti?dPrices.map(p=>"$"+p.toFixed(2)).join(" / ")+"  (mixed)":money(d.unitPrice,d.currency)+" ("+(d.shipTerms||"")+")";
+  const breakHtml=dMulti?`<div style="grid-column:1/-1;margin-top:4px"><div class="k" style="margin-bottom:5px">Price breakdown — ${dLines.length} order lines at different prices</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">${dLines.map(l=>`<span class="matchip"><b>${money(l.price,d.currency)}</b> × ${num(l.qty)}${l.color?" · "+esc(l.color):""}${l.label?" · "+esc(l.label):""}${l.pack?" · "+esc(l.pack):""} = ${money(Number(l.qty||0)*Number(l.price||0),d.currency)}</span>`).join("")}</div></div>`:"";
   const mats=(d.materials||[]);
   const matHtml=mats.length?`<div style="grid-column:1/-1;margin-top:8px"><div class="k" style="margin-bottom:6px">Bill of materials — ${mats.length} line${mats.length===1?"":"s"} to create</div>
     ${mats.map(m=>`<span class="matchip">${esc(m.material)} <span class="muted">· ${esc(m.type||"")}${m.supplier?" · "+esc(m.supplier):""}</span></span>`).join("")}</div>`:"";
@@ -2620,10 +2694,11 @@ function reviewImport(d){
       <div class="review-grid">
         ${row("PO number",d.poNumber)} ${row("Buyer",d.buyer)}
         ${row("Style",d.style)} ${row("Garment",d.garment)}
-        ${row("Quantity",num(d.quantity)+" pcs")} ${row("Unit price",money(d.unitPrice,d.currency)+" ("+(d.shipTerms||"")+")")}
+        ${row("Quantity",num(d.quantity)+" pcs")} ${row("Unit price",priceCell)}
         ${row("Colour",d.color)} ${row("Fabric",d.fabric)}
         ${row("Order date",fmtDate(d.orderDate))} ${row("Delivery / ETD",fmtDate(d.deliveryDate))}
-        ${row("ETA",fmtDate(d.eta))} ${row("Order value",money(Number(d.quantity||0)*Number(d.unitPrice||0),d.currency))}
+        ${row("ETA",fmtDate(d.eta))} ${row("Order value",money(dValue,d.currency))}
+        ${breakHtml}
         ${sbHtml}
         ${matHtml}
       </div>
@@ -2658,6 +2733,7 @@ async function commitImport(thenEdit){
     id:poId, poNumber:d.poNumber||("PO-"+Date.now()), buyerId,
     style:d.style||"", garment:d.garment||"Garment", fabric:d.fabric||"",
     quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||"USD",
+    lines:Array.isArray(d.lines)&&d.lines.length?d.lines.map(l=>({style:l.style||"",color:l.color||"",label:l.label||"",pack:l.pack||"",price:Number(l.price||0),qty:Number(l.qty||0)})):null,
     orderDate:d.orderDate||today(), deliveryDate:d.deliveryDate||"", eta:d.eta||"",
     status:"Confirmed", colors:d.color||"", sizes:d.sizes||"", sizeBreakdown:d.sizeBreakdown||null,
     shipTerms:d.shipTerms||"", shipVia:d.shipVia||"", hts:d.hts||"", retail:Number(d.retail||0),
