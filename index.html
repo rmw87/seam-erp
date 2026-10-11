@@ -1873,12 +1873,14 @@ const INV_CATS=["Fabric","Trim","Packing","Accessories","Sample","Other"];
 function invBalance(it){ return Number(it.received||0)-Number(it.issued||0)-Number(it.adjust||0); }
 function invValue(it){ return invBalance(it)*Number(it.unitPrice||0); }
 function invLow(it){ const r=Number(it.reorder||0); return r>0 && invBalance(it)<=r; }
-const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All",hideZero:true};
+const INV_FILTER={cat:"All",q:"",supplier:"All",status:"All",hideZero:true,from:"",to:""};
 
 function invFilteredRows(){
   let rows=(DB.inventory||[]).slice();
   if(INV_FILTER.cat!=="All") rows=rows.filter(i=>i.category===INV_FILTER.cat);
   if(INV_FILTER.supplier!=="All") rows=rows.filter(i=>(i.supplier||"")===INV_FILTER.supplier);
+  if(INV_FILTER.from) rows=rows.filter(i=>i.date && i.date>=INV_FILTER.from);   // in-house date period
+  if(INV_FILTER.to) rows=rows.filter(i=>i.date && i.date<=INV_FILTER.to);
   if(INV_FILTER.status==="Low") rows=rows.filter(invLow);
   if(INV_FILTER.hideZero) rows=rows.filter(i=>invBalance(i)>0);   // auto-hide zero-balance stock
   if(INV_FILTER.q){ const q=INV_FILTER.q.toLowerCase(); rows=rows.filter(i=>
@@ -1904,6 +1906,8 @@ VIEWS.inventory=function(){
   const lowCount=all.filter(invLow).length;
 
   const rows=invFilteredRows();
+  const shownYds=rows.reduce((a,it)=>a+Math.max(0,invBalance(it)),0);
+  const shownVal=rows.reduce((a,it)=>a+invValue(it),0);
   const body = rows.length?rows.map(it=>{
     const bal=invBalance(it), low=invLow(it);
     return `<tr>
@@ -1937,9 +1941,15 @@ VIEWS.inventory=function(){
       <div class="filterpills">${statusTabs}</div>
       <div class="fp ${INV_FILTER.hideZero?"on":""}" id="invHideZero" title="Hide items with 0 balance">${INV_FILTER.hideZero?"✓ ":""}Hide zero-stock</div>
     </div>
-    <div class="toolbar"><div class="filterpills">${catTabs}</div></div>
+    <div class="toolbar">
+      <span class="muted" style="font-size:12.5px">In-house date:</span>
+      <label style="font-size:12px;color:var(--ink-soft)">From <input type="date" id="invFrom" value="${esc(INV_FILTER.from)}" style="width:150px"></label>
+      <label style="font-size:12px;color:var(--ink-soft)">To <input type="date" id="invTo" value="${esc(INV_FILTER.to)}" style="width:150px"></label>
+      ${(INV_FILTER.from||INV_FILTER.to)?`<button class="btn sm" id="invDateClear">Clear dates</button>`:""}
+      <div class="filterpills" style="margin-left:auto">${catTabs}</div>
+    </div>
     ${lowCount?`<div class="notice"><b>${lowCount} item${lowCount===1?"":"s"}</b> at or below reorder level — shown in red below.</div>`:""}
-    <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · balance = received − issued${INV_FILTER.hideZero?" · zero-stock hidden":""}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · <b>${num(Math.round(shownYds))} yds</b> · <b>${money(shownVal)}</b>${INV_FILTER.hideZero?" · zero-stock hidden":""}${(INV_FILTER.from||INV_FILTER.to)?` · ${INV_FILTER.from?"from "+fmtDate(INV_FILTER.from):""} ${INV_FILTER.to?"to "+fmtDate(INV_FILTER.to):""}`:""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>`;
@@ -1948,6 +1958,9 @@ VIEWS.inventory=function(){
   $$(".fp[data-c]").forEach(f=> f.onclick=()=>{ INV_FILTER.cat=f.dataset.c; VIEWS.inventory(); });
   $$(".fp[data-s]").forEach(f=> f.onclick=()=>{ INV_FILTER.status=f.dataset.s; VIEWS.inventory(); });
   const hz=$("#invHideZero"); if(hz) hz.onclick=()=>{ INV_FILTER.hideZero=!INV_FILTER.hideZero; VIEWS.inventory(); };
+  const fF=$("#invFrom"); if(fF) fF.onchange=e=>{ INV_FILTER.from=e.target.value; VIEWS.inventory(); };
+  const tT=$("#invTo"); if(tT) tT.onchange=e=>{ INV_FILTER.to=e.target.value; VIEWS.inventory(); };
+  const dc=$("#invDateClear"); if(dc) dc.onclick=()=>{ INV_FILTER.from=""; INV_FILTER.to=""; VIEWS.inventory(); };
 };
 
 /* ---- export current (filtered) inventory to Excel ---- */
