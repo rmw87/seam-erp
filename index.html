@@ -69,6 +69,18 @@
   .topbar .right{margin-left:auto; display:flex; gap:9px; align-items:center}
   .content{padding:22px 28px 60px; max-width:1280px; width:100%}
 
+  /* ---------- Mobile top bar + drawer (hidden on desktop) ---------- */
+  .mobilebar{display:none; align-items:center; gap:12px; padding:10px 14px;
+    background:linear-gradient(180deg,var(--denim-deep),#101b30); color:#fff;
+    position:sticky; top:0; z-index:40}
+  .mobilebar .hamburger{background:none; border:1px solid rgba(255,255,255,.22); color:#fff;
+    width:40px; height:38px; border-radius:9px; font-size:19px; cursor:pointer; line-height:1; font-family:inherit}
+  .mobilebar .hamburger:active{background:rgba(255,255,255,.12)}
+  .mobilebar .mbrand{display:flex; align-items:center; gap:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; font-size:15px}
+  .mobilebar .mbrand .stitch{width:24px;height:24px;border:2px dashed #6E89BE;border-radius:6px;display:grid;place-items:center;color:#9FB6E0;font-weight:800;font-size:12px}
+  .navscrim{display:none; position:fixed; inset:0; background:rgba(10,18,35,.5); z-index:55; opacity:0; transition:opacity .2s}
+  body.nav-open .navscrim{opacity:1}
+
   /* ---------- Buttons / inputs ---------- */
   .btn{font-family:inherit; font-size:13px; font-weight:600; border-radius:8px; padding:8px 14px; border:1px solid var(--line); background:var(--surface); color:var(--ink); cursor:pointer; display:inline-flex; gap:7px; align-items:center; white-space:nowrap}
   .btn:hover{border-color:#c3ccd8}
@@ -181,17 +193,37 @@
   .stat-line:last-child{border-bottom:none}
 
   @media (max-width:880px){
-    body{grid-template-columns:1fr; grid-template-rows:auto 1fr}
-    .side{flex-direction:row; overflow:auto; align-items:center; height:auto}
-    nav{display:flex; gap:4px; padding:8px}
-    .nav-group,.brand .sub{display:none}
-    .nav-item{padding:8px 10px; font-size:12px}
-    .side-foot{border:none; padding:6px 8px; display:flex; gap:6px; align-items:center}
-    .side-foot .userchip{display:none}
-    .side-foot button{width:auto; padding:6px 10px}
-    .kpis{grid-template-columns:1fr 1fr}
-    .grid2{grid-template-columns:1fr}
-    body{grid-template-rows:auto auto 1fr}
+    body{grid-template-columns:1fr; grid-template-rows:100vh}
+    .mobilebar{display:flex}
+    .navscrim{display:block; pointer-events:none}
+    body.nav-open .navscrim{pointer-events:auto}
+    /* sidebar becomes an off-canvas drawer that slides in from the left */
+    .side{
+      position:fixed; top:0; left:0; bottom:0; width:264px; height:100vh; z-index:60;
+      flex-direction:column; overflow:hidden; transform:translateX(-100%);
+      transition:transform .25s ease; box-shadow:0 20px 60px rgba(0,0,0,.45);
+    }
+    body.nav-open .side{transform:translateX(0)}
+    nav{display:block; flex:1; overflow:auto; padding:10px 12px}
+    .nav-group{display:block}
+    .brand .sub{display:block}
+    .nav-item{font-size:14px; padding:11px 12px}
+    .side-foot{display:block}
+    .topbar{position:static; padding:14px 16px 10px}
+    .topbar h2{font-size:19px}
+    .content{padding:16px 15px 70px}
+    .kpis{grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px}
+    .kpi .kval{font-size:22px}
+    .grid2{grid-template-columns:1fr; gap:14px}
+    .row2,.row3{grid-template-columns:1fr}
+    .topbar .right{flex-wrap:wrap; gap:6px}
+    .modal{width:94vw; max-width:94vw}
+    .loginwrap{padding:16px}
+    .loginbox{padding:26px 22px 22px}
+    .scrim{padding:20px 10px}
+  }
+  @media (max-width:460px){
+    .kpis{grid-template-columns:1fr}
   }
 
   /* ---------- Import dropzone ---------- */
@@ -282,8 +314,13 @@
   <nav id="nav"></nav>
   <div class="side-foot" id="sideFoot"></div>
 </div>
+<div class="navscrim" id="navScrim" onclick="closeNav()"></div>
 
 <div class="main">
+  <div class="mobilebar">
+    <button class="hamburger" onclick="toggleNav()" aria-label="Menu">☰</button>
+    <div class="mbrand"><div class="stitch">S</div><span>Seam</span></div>
+  </div>
   <div class="topbar">
     <div>
       <div class="eyebrow" id="crumb">Overview</div>
@@ -830,10 +867,13 @@ function buildNav(){
   }).join("");
   $$(".nav-item").forEach(n=> n.onclick=()=>go(n.dataset.route));
 }
+function toggleNav(){ document.body.classList.toggle("nav-open"); }
+function closeNav(){ document.body.classList.remove("nav-open"); }
 const ADMIN_ROUTES = ["users","trash","settings"];
 const SUPER_ROUTES = ["superadmin"];
 function go(route){
   if(!CURRENT){ showLogin(); return; }
+  closeNav();   // close the mobile drawer whenever we navigate
   if(SUPER_ROUTES.includes(route) && !isSuperAdmin()){ toast("Super administrator only","warn"); route="dashboard"; }
   if(ADMIN_ROUTES.includes(route) && !isAdmin()){ toast("Administrators only","warn"); route="dashboard"; }
   if(!userCanSee(route)){
