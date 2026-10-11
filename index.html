@@ -911,6 +911,17 @@ VIEWS.dashboard = function(){
   const mQty = DB.daily.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+Number(e.qty||0),0);
   const mCM = DB.daily.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+dailyIncome(e),0);
 
+  // sub-contract daily production
+  const sub = DB.subcontract||[];
+  const subLastDate = sub.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
+  const subLastQty = sub.filter(e=>e.date===subLastDate).reduce((a,e)=>a+Number(e.qty||0),0);
+  const subMQty = sub.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+Number(e.qty||0),0);
+  const subMCM = sub.filter(e=>monthKey(e.date)===thisMonth()).reduce((a,e)=>a+subIncome(e),0);
+
+  // combined
+  const totMQty = mQty + subMQty;
+  const totMCM = mCM + subMCM;
+
   const kpis = `
   <div class="kpis">
     <div class="kpi"><div class="klab">Active orders</div><div class="kval">${active.length}</div><div class="ksub">${money(orderValue)} total order value</div></div>
@@ -919,11 +930,27 @@ VIEWS.dashboard = function(){
     <div class="kpi k-chalk"><div class="klab">Ready to ship</div><div class="kval">${num(ready)}</div><div class="ksub">units awaiting export</div></div>
   </div>
   <div class="kpis">
-    <div class="kpi k-chalk"><div class="klab">Last day production</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"no entries yet"}</div></div>
-    <div class="kpi"><div class="klab">This month production</div><div class="kval">${num(mQty)}</div><div class="ksub">pieces · ${thisMonth()}</div></div>
-    <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(mCM)}</div><div class="ksub">qty × CM price</div></div>
-    <div class="kpi k-thread"><div class="klab">Production lines</div><div class="kval">${DB.lines.length}</div><div class="ksub"><span class="linklike" onclick="go('daily')">open daily production</span></div></div>
+    <div class="kpi"><div class="klab">Total production (month)</div><div class="kval">${num(totMQty)}</div><div class="ksub">factory + sub-contract · ${thisMonth()}</div></div>
+    <div class="kpi k-chalk"><div class="klab">Factory this month</div><div class="kval">${num(mQty)}</div><div class="ksub"><span class="linklike" onclick="go('daily')">in-house daily out</span></div></div>
+    <div class="kpi k-thread"><div class="klab">Sub-contract this month</div><div class="kval">${num(subMQty)}</div><div class="ksub"><span class="linklike" onclick="go('subcontract')">outside factories</span></div></div>
+    <div class="kpi k-green"><div class="klab">Total CM income (month)</div><div class="kval" style="font-size:22px">${cmMoney(totMCM)}</div><div class="ksub">factory + sub-contract</div></div>
   </div>`;
+
+  // production summary (factory vs sub-contract)
+  const prodSummary = `
+    <div class="panel-body"><table>
+      <thead><tr><th>Stream</th><th class="num">Last day out</th><th class="num">This month out</th><th class="num">CM income (month)</th></tr></thead>
+      <tbody>
+        <tr><td class="strong">Factory (in-house)</td>
+          <td class="num">${num(lastQty)}${lastDate?` <span class="muted" style="font-size:11px">${fmtDate(lastDate)}</span>`:""}</td>
+          <td class="num strong">${num(mQty)}</td><td class="num">${cmMoney(mCM)}</td></tr>
+        <tr><td class="strong">Sub-contract</td>
+          <td class="num">${num(subLastQty)}${subLastDate?` <span class="muted" style="font-size:11px">${fmtDate(subLastDate)}</span>`:""}</td>
+          <td class="num strong">${num(subMQty)}</td><td class="num">${cmMoney(subMCM)}</td></tr>
+      </tbody>
+      <tfoot><tr style="border-top:2px solid var(--line)"><td class="strong">Total</td><td class="num">—</td>
+        <td class="num strong">${num(totMQty)}</td><td class="num strong">${cmMoney(totMCM)}</td></tr></tfoot>
+    </table></div>`;
 
   const poRows = DB.pos.map(p=>{
     const mp=materialProgress(p.id), pp=productionProgress(p);
@@ -947,6 +974,12 @@ VIEWS.dashboard = function(){
       <div class="panel-body"><table>
         <thead><tr><th>PO / Style</th><th>Buyer</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
         <tbody>${poRows}</tbody></table></div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production summary</h3><div class="meta">factory vs sub-contract · ${thisMonth()}</div>
+      <div class="actions"><button class="btn sm" onclick="go('daily')">Daily production</button> <button class="btn sm" onclick="go('subcontract')">Sub contract</button></div></div>
+      ${prodSummary}
     </div>
   </div>
   <div class="grid2">
