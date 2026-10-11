@@ -623,6 +623,9 @@ async function initData(){
   if(!DB.chequeLayout) DB.chequeLayout=defaultChequeLayout();
   if(!DB.inventory) DB.inventory=seedInventory();
   if(!DB.issues) DB.issues=[];
+  if(!DB.subfactories) DB.subfactories=["D & S CLOTHING","R T FASHION","DILKI - I GARMENT","NIMTOP - ATHURUGIRIYA","NIMTOP - KULIYAPITIYA"].map(n=>({id:uid("sf"),name:n}));
+  if(!DB.subcontract) DB.subcontract=[];
+  if(!DB.subCut) DB.subCut={};   // poId → total cut qty released to sub-contracting
   // drop any throwaway default admin from older versions
   DB.users = DB.users.filter(u=>!u.isDefault);
   // auto-purge recycle bin items older than 30 days
@@ -637,7 +640,7 @@ function canDelete(){ return isAdmin() || !!(DB.settings && DB.settings.allowSta
 /* ============================================================
    RECYCLE BIN  (soft delete → restore, auto-purge after 30 days)
    ============================================================ */
-const TRASH_LABEL={buyer:"Buyer",supplier:"Supplier",po:"Purchase order",shipment:"Shipment",daily:"Daily production",inventory:"Inventory item"};
+const TRASH_LABEL={buyer:"Buyer",supplier:"Supplier",po:"Purchase order",shipment:"Shipment",daily:"Daily production",inventory:"Inventory item",subcontract:"Sub-contract production"};
 function trashPush(type,label,payload){
   DB.trash.push({tid:uid("trash"),type,label,payload,deletedAt:Date.now(),deletedBy:CURRENT?CURRENT.username:""});
 }
@@ -657,11 +660,13 @@ async function softDeletePO(id){
   const bom=DB.bom.filter(m=>m.poId===id);
   const ships=DB.shipments.filter(s=>s.poId===id);
   const daily=DB.daily.filter(d=>d.poId===id);
-  trashPush("po", p.poNumber+" · "+p.garment, {po:p,bom,ships,daily});
+  const sub=DB.subcontract.filter(d=>d.poId===id);
+  trashPush("po", p.poNumber+" · "+p.garment, {po:p,bom,ships,daily,sub});
   DB.pos=DB.pos.filter(x=>x.id!==id);
   DB.bom=DB.bom.filter(m=>m.poId!==id);
   DB.shipments=DB.shipments.filter(s=>s.poId!==id);
   DB.daily=DB.daily.filter(d=>d.poId!==id);
+  DB.subcontract=DB.subcontract.filter(d=>d.poId!==id);
   await save();
 }
 async function softDeleteShip(id){
@@ -680,15 +685,22 @@ async function softDeleteInventory(id){
   trashPush("inventory", (it.code?it.code+" · ":"")+it.item, {inventory:it});
   DB.inventory=DB.inventory.filter(x=>x.id!==id); await save();
 }
+async function softDeleteSub(id){
+  const d=DB.subcontract.find(x=>x.id===id); if(!d) return;
+  const po=poByNumber(d.poId);
+  trashPush("subcontract", fmtDate(d.date)+" · "+subName(d.subId)+" · "+num(d.qty)+" pcs", {sub:d});
+  DB.subcontract=DB.subcontract.filter(x=>x.id!==id); await save();
+}
 async function restoreTrash(tid){
   const t=DB.trash.find(x=>x.tid===tid); if(!t) return;
   const p=t.payload;
   if(t.type==="buyer" && p.buyer) DB.buyers.push(p.buyer);
   if(t.type==="supplier" && p.supplier) DB.suppliers.push(p.supplier);
-  if(t.type==="po" && p.po){ DB.pos.push(p.po); (p.bom||[]).forEach(m=>DB.bom.push(m)); (p.ships||[]).forEach(s=>DB.shipments.push(s)); (p.daily||[]).forEach(d=>DB.daily.push(d)); }
+  if(t.type==="po" && p.po){ DB.pos.push(p.po); (p.bom||[]).forEach(m=>DB.bom.push(m)); (p.ships||[]).forEach(s=>DB.shipments.push(s)); (p.daily||[]).forEach(d=>DB.daily.push(d)); (p.sub||[]).forEach(d=>DB.subcontract.push(d)); }
   if(t.type==="shipment" && p.shipment) DB.shipments.push(p.shipment);
   if(t.type==="daily" && p.daily) DB.daily.push(p.daily);
   if(t.type==="inventory" && p.inventory) DB.inventory.push(p.inventory);
+  if(t.type==="subcontract" && p.sub) DB.subcontract.push(p.sub);
   DB.trash=DB.trash.filter(x=>x.tid!==tid);
   await save();
 }
@@ -726,6 +738,7 @@ const NAV = [
   ]},
   {grp:"Operations", items:[
     {id:"daily",ico:"◪",label:"Daily Production"},
+    {id:"subcontract",ico:"◭",label:"Sub Contract"},
     {id:"production",ico:"◫",label:"Production Stages"},
     {id:"wip",ico:"▥",label:"WIP Report"},
     {id:"export",ico:"➜",label:"Export & Shipment"},
@@ -752,7 +765,7 @@ function navBadge(id){
   return null;
 }
 /* which operational tabs a staff user may see (admins see all). undefined = all */
-const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","production","wip","export","cheque"];
+const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","cheque"];
 const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
@@ -1587,6 +1600,236 @@ async function removeLine(id){
 }
 
 /* ============================================================
+   SUB CONTRACT PRODUCTION  (work given to outside factories)
+   Net CM = CM price + Cost adjustment − Sub-contract charges
+   Income = Net CM × Daily out
+   ============================================================ */
+const subName = id => (DB.subfactories.find(s=>s.id===id)||{}).name || "—";
+function subNetCM(e){ return Number(e.cmPrice||0)+Number(e.costAdj||0)-Number(e.subCharges||0); }
+function subIncome(e){ return subNetCM(e)*Number(e.qty||0); }
+function subTotalOut(poId,exceptId){ return DB.subcontract.filter(d=>d.poId===poId && d.id!==exceptId).reduce((a,d)=>a+Number(d.qty||0),0); }
+function subCutQty(poId){ return Number((DB.subCut||{})[poId]||0); }
+const SUB_FILTER={month:"",sub:"All"};
+
+VIEWS.subcontract=function(){
+  const admin=isAdmin();
+  setHead("Operations","Sub Contract Production",
+    `<button class="btn" onclick="exportSubcontract()">⬆ Export Excel</button> ${admin?`<button class="btn" onclick="manageSubfactories()">Manage sub-factories</button> `:""}<button class="btn primary" onclick="editSub()">+ Add production</button>`);
+  if(!DB.pos.length){ return emptyState("Add a purchase order first","Sub-contract production is logged against an existing PO.","go('pos')","Open orders"); }
+
+  SUB_FILTER.month = SUB_FILTER.month || thisMonth();
+  const months = Array.from(new Set(DB.subcontract.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
+  if(!months.includes(SUB_FILTER.month)) months.unshift(SUB_FILTER.month);
+  let rows = DB.subcontract.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
+  rows = rows.filter(e=> monthKey(e.date)===SUB_FILTER.month);
+  if(SUB_FILTER.sub!=="All") rows=rows.filter(e=>e.subId===SUB_FILTER.sub);
+
+  const allMonth = DB.subcontract.filter(e=>monthKey(e.date)===SUB_FILTER.month && (SUB_FILTER.sub==="All"||e.subId===SUB_FILTER.sub));
+  const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
+  const monthInc = allMonth.reduce((a,e)=>a+subIncome(e),0);
+  const lastDate = DB.subcontract.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
+  const lastQty = DB.subcontract.filter(e=>e.date===lastDate).reduce((a,e)=>a+Number(e.qty||0),0);
+
+  const body = rows.length?rows.map(e=>{
+    const po=poByNumber(e.poId);
+    return `<tr>
+      <td class="num">${fmtDate(e.date)}</td>
+      <td>${esc(subName(e.subId))}</td>
+      <td>${po?`<span class="linklike" onclick="openPO('${e.poId}')">${esc(po.poNumber)}</span>`:"—"}</td>
+      <td>${esc(e.style||(po?po.style:"")||"—")}</td>
+      <td class="num strong">${num(e.qty)}</td>
+      <td class="num">${cmMoney(e.cmPrice,e.currency)}</td>
+      <td class="num">${Number(e.costAdj||0)>=0?"+":""}${cmMoney(e.costAdj,e.currency)}</td>
+      <td class="num">${cmMoney(e.subCharges,e.currency)}</td>
+      <td class="num strong">${cmMoney(subNetCM(e),e.currency)}</td>
+      <td class="num strong">${cmMoney(subIncome(e),e.currency)}</td>
+      <td class="num"><button class="btn sm" onclick="editSub('${e.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delSub('${e.id}')">Delete</button>`:""}</td></tr>`;
+  }).join("") : `<tr><td colspan="11" class="muted" style="text-align:center;padding:28px">No sub-contract production for this month${SUB_FILTER.sub!=="All"?" at this sub-factory":""}.</td></tr>`;
+
+  // month summary by sub-factory
+  const bySub={};
+  allMonth.forEach(e=>{ const k=e.subId; if(!bySub[k]) bySub[k]={qty:0,inc:0}; bySub[k].qty+=Number(e.qty||0); bySub[k].inc+=subIncome(e); });
+  const subSummary=Object.entries(bySub).map(([sid,v])=>`<div class="stat-line"><span>${esc(subName(sid))}</span><span class="strong">${num(v.qty)} pcs · ${cmMoney(v.inc)}</span></div>`).join("") || `<div class="muted" style="font-size:13px">No entries yet.</div>`;
+
+  // per-PO progress: cut qty vs total out vs balance (all time, across sub-factories)
+  const poIds=Array.from(new Set(DB.subcontract.map(e=>e.poId)));
+  const poProgress=poIds.map(pid=>{
+    const po=poByNumber(pid); const cut=subCutQty(pid); const out=subTotalOut(pid,null); const bal=cut-out;
+    const pct=cut>0?Math.min(100,Math.round(out/cut*100)):0;
+    return `<div style="margin-bottom:10px">
+      <div class="stat-line" style="border:none;padding:2px 0"><span>${po?esc(po.poNumber+" · "+(po.style||po.garment)):"—"}</span>
+        <span class="strong">${num(out)} / ${cut?num(cut):"—"} out${cut?` · bal ${num(bal)}`:""}</span></div>
+      ${cut>0?`<div style="height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden"><div style="height:100%;width:${pct}%;background:${bal<0?'var(--danger,#d9534f)':'var(--accent,#2e7d6b)'}"></div></div>`:""}</div>`;
+  }).join("") || `<div class="muted" style="font-size:13px">No cut quantity recorded yet.</div>`;
+
+  const subTabs = `<div class="fp ${SUB_FILTER.sub==="All"?"on":""}" data-s="All">All sub-factories</div>`+
+    DB.subfactories.map(s=>`<div class="fp ${SUB_FILTER.sub===s.id?"on":""}" data-s="${s.id}">${esc(s.name)}</div>`).join("");
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
+      <div class="kpi k-chalk"><div class="klab">This month output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${SUB_FILTER.month}</div></div>
+      <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(monthInc)}</div><div class="ksub">net CM × out</div></div>
+      <div class="kpi k-thread"><div class="klab">Sub-factories</div><div class="kval">${DB.subfactories.length}</div><div class="ksub">${allMonth.length} entries this month</div></div>
+    </div>
+    <div class="toolbar">
+      <select id="smonth" style="max-width:150px">${months.map(m=>`<option ${m===SUB_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <div class="filterpills">${subTabs}</div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th class="num">Date</th><th>Sub-factory</th><th>PO</th><th>Style</th><th class="num">Daily out</th><th class="num">CM price</th><th class="num">Cost adj</th><th class="num">Sub charges</th><th class="num">Net CM</th><th class="num">Income</th><th></th></tr></thead>
+        <tbody>${body}</tbody></table></div></div>
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Month summary by sub-factory</h3><div class="meta">${SUB_FILTER.month}</div></div>
+        <div class="panel-pad">${subSummary}
+          <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthInc)}</span></div>
+        </div></div>
+      <div class="panel"><div class="panel-head"><h3>Cut qty progress by PO</h3><div class="meta">out vs balance (all sub-factories)</div></div>
+        <div class="panel-pad">${poProgress}</div></div>
+    </div>`;
+  $("#smonth").onchange=e=>{ SUB_FILTER.month=e.target.value; VIEWS.subcontract(); };
+  $$(".fp").forEach(f=> f.onclick=()=>{ SUB_FILTER.sub=f.dataset.s; VIEWS.subcontract(); });
+};
+
+function editSub(id){
+  const e = id?DB.subcontract.find(x=>x.id===id):null;
+  const subOptions = DB.subfactories.map(s=>`<option value="${s.id}" ${e&&e.subId===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${e&&e.poId===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${id?"Edit sub-contract entry":"Add sub-contract production"}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="row2">
+        <label class="fld"><span class="lab">Sub-factory *</span><select id="s_sub">${subOptions}</select></label>
+        <label class="fld"><span class="lab">Production date *</span><input id="s_date" type="date" value="${e?e.date:today()}"></label>
+      </div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Purchase order *</span><select id="s_po"><option value="">— select PO —</option>${poOptions}</select></label>
+        <label class="fld"><span class="lab">Style</span><input id="s_style" value="${e?esc(e.style||""):""}" placeholder="auto from PO"></label>
+      </div>
+      <label class="fld"><span class="lab">Total cut qty given for this PO</span><input id="s_cut" type="number" min="0" value="${e?subCutQty(e.poId):""}" placeholder="pieces released to sub-contract"></label>
+      <div id="s_balbox" class="notice" style="display:none;margin-top:0"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Daily out *</span><input id="s_qty" type="number" min="0" value="${e?e.qty:""}" placeholder="pieces made today"></label>
+        <label class="fld"><span class="lab">Original CM price *</span><input id="s_cm" type="number" step="0.0001" min="0" value="${e?e.cmPrice:""}" placeholder="buyer CM rate"></label>
+      </div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Cost adjustment (+ / −)</span><input id="s_adj" type="number" step="0.0001" value="${e?e.costAdj:""}" placeholder="e.g. 0.15 or -0.10"></label>
+        <label class="fld"><span class="lab">Sub-contract charges</span><input id="s_chg" type="number" step="0.0001" min="0" value="${e?e.subCharges:""}" placeholder="paid to sub-factory / pc"></label>
+      </div>
+      <div class="panel-pad" style="background:var(--surface-2);border-radius:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.08em">Net CM (per piece)</span>
+          <span id="s_net" class="strong" style="font-size:18px;font-variant-numeric:tabular-nums">—</span></div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.08em">Income (net CM × out)</span>
+          <span id="s_income" class="strong" style="font-size:20px;font-variant-numeric:tabular-nums">—</span></div>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="s_save">${id?"Save entry":"Add entry"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const poSel=$("#s_po"), styleInp=$("#s_style"), cutInp=$("#s_cut"), balBox=$("#s_balbox");
+  function refreshPO(){
+    const po=poByNumber(poSel.value);
+    if(po && !styleInp.value) styleInp.value=po.style||"";
+    if(po && !id){ const c=subCutQty(po.id); if(c) cutInp.value=c; }
+    recalc();
+  }
+  function recalc(){
+    const cm=Number($("#s_cm").value||0), adj=Number($("#s_adj").value||0), chg=Number($("#s_chg").value||0);
+    const qty=Number($("#s_qty").value||0);
+    const po=poByNumber(poSel.value); const cur=po?po.currency:"USD";
+    const net=cm+adj-chg;
+    $("#s_net").textContent=cmMoney(net,cur);
+    $("#s_income").textContent=cmMoney(net*qty,cur);
+    // cut / out / balance
+    if(poSel.value){
+      const cut=Number(cutInp.value||0);
+      const otherOut=subTotalOut(poSel.value,id||null);
+      const totalOut=otherOut+qty;
+      const bal=cut-totalOut;
+      balBox.style.display="block";
+      balBox.innerHTML=`<b>Total out:</b> ${num(totalOut)} pcs &nbsp;·&nbsp; <b>Balance:</b> <span style="color:${bal<0?'#c0392b':'inherit'}">${num(bal)} pcs</span>${cut?` &nbsp;·&nbsp; <b>Cut:</b> ${num(cut)}`:""}${bal<0?" &nbsp;⚠ over cut qty":""}`;
+    } else balBox.style.display="none";
+  }
+  poSel.onchange=refreshPO;
+  ["s_qty","s_cm","s_adj","s_chg","s_cut"].forEach(i=>$("#"+i).oninput=recalc);
+  refreshPO();
+  $("#s_save").onclick=async()=>{
+    const subId=$("#s_sub").value, date=$("#s_date").value, poId=poSel.value;
+    const qty=Number($("#s_qty").value||0), cmPrice=Number($("#s_cm").value||0);
+    const costAdj=Number($("#s_adj").value||0), subCharges=Number($("#s_chg").value||0);
+    const cut=Number(cutInp.value||0), style=styleInp.value.trim();
+    if(!subId||!date||!poId){ toast("Sub-factory, date and PO are required","warn"); return; }
+    if(qty<=0){ toast("Enter the daily out quantity","warn"); return; }
+    const po=poByNumber(poId);
+    if(cut>0){ DB.subCut[poId]=cut; }           // remember cut qty for this PO
+    const rec={subId,date,poId,style:style||(po?po.style:""),qty,cmPrice,costAdj,subCharges,
+      currency:po?po.currency:"USD", netCM:cmPrice+costAdj-subCharges, income:(cmPrice+costAdj-subCharges)*qty};
+    if(id){ Object.assign(e,rec); }
+    else { DB.subcontract.push({id:uid("sc"),...rec,enteredBy:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
+    await save(); closeModal(); VIEWS.subcontract(); toast(id?"Entry updated":"Sub-contract production added","ok");
+  };
+}
+function delSub(id){
+  confirmModal("Delete entry","Moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteSub(id); closeModal(); VIEWS.subcontract(); toast("Entry moved to Recycle Bin","ok");
+  });
+}
+function manageSubfactories(){
+  if(!isAdmin()) return;
+  const rows=DB.subfactories.map(s=>{
+    const used=DB.subcontract.some(d=>d.subId===s.id);
+    return `<div class="stat-line"><span><input value="${esc(s.name)}" data-sf="${s.id}" style="width:240px;padding:6px 9px"></span>
+      <span><button class="btn sm danger" onclick="removeSubfactory('${s.id}')" ${used?"disabled title='Has production entries'":""}>Remove</button></span></div>`;
+  }).join("");
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Sub-contractors</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div id="sfList">${rows||`<div class="muted">No sub-factories yet.</div>`}</div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <input id="newSf" placeholder="New sub-contractor name" style="flex:1">
+        <button class="btn" id="addSf">Add</button>
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button><button class="btn primary" id="saveSf">Save names</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#addSf").onclick=async()=>{
+    const v=$("#newSf").value.trim(); if(!v){ toast("Enter a name","warn"); return; }
+    DB.subfactories.push({id:uid("sf"),name:v}); await save(); manageSubfactories();
+  };
+  $("#saveSf").onclick=async()=>{
+    $$("#sfList input[data-sf]").forEach(inp=>{ const s=DB.subfactories.find(x=>x.id===inp.dataset.sf); if(s) s.name=inp.value.trim()||s.name; });
+    await save(); closeModal(); toast("Sub-contractors saved","ok"); if(ROUTE==="subcontract") VIEWS.subcontract();
+  };
+}
+async function removeSubfactory(id){
+  if(DB.subcontract.some(d=>d.subId===id)){ toast("Has production entries — can't remove","warn"); return; }
+  DB.subfactories=DB.subfactories.filter(s=>s.id!==id); await save(); manageSubfactories();
+}
+function exportSubcontract(){
+  if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
+  let rows=DB.subcontract.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  if(SUB_FILTER.sub!=="All") rows=rows.filter(e=>e.subId===SUB_FILTER.sub);
+  if(!rows.length){ toast("Nothing to export","warn"); return; }
+  const data=rows.map(e=>{ const po=poByNumber(e.poId); return {
+    Date:e.date||"", "Sub-factory":subName(e.subId), PO:po?po.poNumber:"", Style:e.style||(po?po.style:"")||"",
+    "Daily out":Number(e.qty||0), "CM price":Number(e.cmPrice||0), "Cost adjustment":Number(e.costAdj||0),
+    "Sub-contract charges":Number(e.subCharges||0), "Net CM":subNetCM(e), Income:subIncome(e),
+    "Cut qty (PO)":subCutQty(e.poId), "Total out (PO)":subTotalOut(e.poId,null), "Balance (PO)":subCutQty(e.poId)-subTotalOut(e.poId,null)
+  };});
+  const ws=XLSX.utils.json_to_sheet(data);
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"SubContract");
+  XLSX.writeFile(wb,"Seam_SubContract_"+today()+".xlsx");
+  toast("Exported "+rows.length+" entries","ok");
+}
+
+/* ============================================================
    RECYCLE BIN VIEW  (admin)
    ============================================================ */
 VIEWS.trash=function(){
@@ -1663,7 +1906,7 @@ function clearAllData(){
   if(!isAdmin()) return;
   confirmModal("Clear all data","Delete every order, buyer, supplier, inventory item, production entry, shipment and cheque, leaving an empty workspace? User accounts and production lines are kept. This cannot be undone.",async()=>{
     DB.buyers=[]; DB.suppliers=[]; DB.pos=[]; DB.bom=[]; DB.shipments=[];
-    DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[];
+    DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[]; DB.subcontract=[]; DB.subCut={};
     await save(); closeModal(); go("dashboard"); toast("All data cleared — workspace is empty","ok");
   });
 }
