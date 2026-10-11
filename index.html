@@ -1609,7 +1609,12 @@ function subNetCM(e){ return Number(e.cmPrice||0)+Number(e.costAdj||0)-Number(e.
 function subIncome(e){ return subNetCM(e)*Number(e.qty||0); }
 function subTotalOut(poId,exceptId){ return DB.subcontract.filter(d=>d.poId===poId && d.id!==exceptId).reduce((a,d)=>a+Number(d.qty||0),0); }
 function subCutQty(poId){ return Number((DB.subCut||{})[poId]||0); }
-const SUB_FILTER={month:"",sub:"All"};
+const SUB_FILTER={month:"",sub:"All",from:"",to:""};
+function subInRange(e){
+  if(SUB_FILTER.from && (e.date||"")<SUB_FILTER.from) return false;
+  if(SUB_FILTER.to && (e.date||"")>SUB_FILTER.to) return false;
+  return true;
+}
 
 VIEWS.subcontract=function(){
   const admin=isAdmin();
@@ -1618,13 +1623,16 @@ VIEWS.subcontract=function(){
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Sub-contract production is logged against an existing PO.","go('pos')","Open orders"); }
 
   SUB_FILTER.month = SUB_FILTER.month || thisMonth();
+  const rangeActive = !!(SUB_FILTER.from || SUB_FILTER.to);
+  const periodLabel = rangeActive ? ((SUB_FILTER.from?fmtDate(SUB_FILTER.from):"…")+" → "+(SUB_FILTER.to?fmtDate(SUB_FILTER.to):"…")) : SUB_FILTER.month;
   const months = Array.from(new Set(DB.subcontract.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
   if(!months.includes(SUB_FILTER.month)) months.unshift(SUB_FILTER.month);
-  let rows = DB.subcontract.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
-  rows = rows.filter(e=> monthKey(e.date)===SUB_FILTER.month);
-  if(SUB_FILTER.sub!=="All") rows=rows.filter(e=>e.subId===SUB_FILTER.sub);
+  // the set shown = date range when a range is set, otherwise the selected month
+  let base = DB.subcontract.slice();
+  if(SUB_FILTER.sub!=="All") base=base.filter(e=>e.subId===SUB_FILTER.sub);
+  const allMonth = rangeActive ? base.filter(subInRange) : base.filter(e=>monthKey(e.date)===SUB_FILTER.month);
+  let rows = allMonth.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
 
-  const allMonth = DB.subcontract.filter(e=>monthKey(e.date)===SUB_FILTER.month && (SUB_FILTER.sub==="All"||e.subId===SUB_FILTER.sub));
   const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
   const monthInc = allMonth.reduce((a,e)=>a+subIncome(e),0);
   const lastDate = DB.subcontract.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
@@ -1669,20 +1677,27 @@ VIEWS.subcontract=function(){
   $("#view").innerHTML=`
     <div class="kpis">
       <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
-      <div class="kpi k-chalk"><div class="klab">This month output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${SUB_FILTER.month}</div></div>
-      <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(monthInc)}</div><div class="ksub">net CM × out</div></div>
-      <div class="kpi k-thread"><div class="klab">Sub-factories</div><div class="kval">${DB.subfactories.length}</div><div class="ksub">${allMonth.length} entries this month</div></div>
+      <div class="kpi k-chalk"><div class="klab">Output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${periodLabel}</div></div>
+      <div class="kpi k-green"><div class="klab">CM income</div><div class="kval" style="font-size:22px">${cmMoney(monthInc)}</div><div class="ksub">net CM × out · ${periodLabel}</div></div>
+      <div class="kpi k-thread"><div class="klab">Sub-factories</div><div class="kval">${DB.subfactories.length}</div><div class="ksub">${allMonth.length} entries in period</div></div>
     </div>
     <div class="toolbar">
-      <select id="smonth" style="max-width:150px">${months.map(m=>`<option ${m===SUB_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <select id="smonth" style="max-width:150px" ${rangeActive?"disabled title='Clear dates to use month'":""}>${months.map(m=>`<option ${m===SUB_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
       <div class="filterpills">${subTabs}</div>
     </div>
-    <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}</div></div>
+    <div class="toolbar" style="margin-top:-6px">
+      <span class="muted" style="font-size:12.5px">Date range:</span>
+      <input id="sFrom" type="date" value="${SUB_FILTER.from||""}" style="max-width:160px">
+      <span class="muted">→</span>
+      <input id="sTo" type="date" value="${SUB_FILTER.to||""}" style="max-width:160px">
+      ${rangeActive?`<button class="btn sm" id="sDateClear">Clear dates</button>`:""}
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"} · ${periodLabel}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th class="num">Date</th><th>Sub-factory</th><th>PO</th><th>Style</th><th class="num">Daily out</th><th class="num">CM price</th><th class="num">Cost adj</th><th class="num">Sub charges</th><th class="num">Net CM</th><th class="num">Income</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
     <div class="grid2">
-      <div class="panel"><div class="panel-head"><h3>Month summary by sub-factory</h3><div class="meta">${SUB_FILTER.month}</div></div>
+      <div class="panel"><div class="panel-head"><h3>Summary by sub-factory</h3><div class="meta">${periodLabel}</div></div>
         <div class="panel-pad">${subSummary}
           <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthInc)}</span></div>
         </div></div>
@@ -1690,6 +1705,9 @@ VIEWS.subcontract=function(){
         <div class="panel-pad">${poProgress}</div></div>
     </div>`;
   $("#smonth").onchange=e=>{ SUB_FILTER.month=e.target.value; VIEWS.subcontract(); };
+  $("#sFrom").onchange=e=>{ SUB_FILTER.from=e.target.value; VIEWS.subcontract(); };
+  $("#sTo").onchange=e=>{ SUB_FILTER.to=e.target.value; VIEWS.subcontract(); };
+  const sdc=$("#sDateClear"); if(sdc) sdc.onclick=()=>{ SUB_FILTER.from=""; SUB_FILTER.to=""; VIEWS.subcontract(); };
   $$(".fp").forEach(f=> f.onclick=()=>{ SUB_FILTER.sub=f.dataset.s; VIEWS.subcontract(); });
 };
 
@@ -1709,6 +1727,13 @@ function editSub(id){
         <label class="fld"><span class="lab">Purchase order *</span><select id="s_po"><option value="">— select PO —</option>${poOptions}</select></label>
         <label class="fld"><span class="lab">Style</span><input id="s_style" value="${e?esc(e.style||""):""}" placeholder="auto from PO"></label>
       </div>
+      <div style="margin:-4px 0 2px;font-size:12.5px">
+        <span class="muted">PO not in the list? </span>
+        <span class="linklike" onclick="subAddPO('import')">⤓ Import PO (PDF)</span>
+        <span class="muted"> · </span>
+        <span class="linklike" onclick="subAddPO('new')">+ New PO manually</span>
+      </div>
+      <div id="s_poinfo" class="notice" style="display:none;margin-top:0"></div>
       <label class="fld"><span class="lab">Total cut qty given for this PO</span><input id="s_cut" type="number" min="0" value="${e?subCutQty(e.poId):""}" placeholder="pieces released to sub-contract"></label>
       <div id="s_balbox" class="notice" style="display:none;margin-top:0"></div>
       <div class="row2">
@@ -1732,11 +1757,15 @@ function editSub(id){
       <button class="btn primary" id="s_save">${id?"Save entry":"Add entry"}</button></div>`;
   $("#scrim").classList.add("open");
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
-  const poSel=$("#s_po"), styleInp=$("#s_style"), cutInp=$("#s_cut"), balBox=$("#s_balbox");
+  const poSel=$("#s_po"), styleInp=$("#s_style"), cutInp=$("#s_cut"), balBox=$("#s_balbox"), poInfo=$("#s_poinfo");
   function refreshPO(){
     const po=poByNumber(poSel.value);
-    if(po && !styleInp.value) styleInp.value=po.style||"";
-    if(po && !id){ const c=subCutQty(po.id); if(c) cutInp.value=c; }
+    if(po){
+      styleInp.value=po.style||"";                 // always sync style to the selected PO
+      if(!id){ const c=subCutQty(po.id); if(c) cutInp.value=c; }
+      poInfo.style.display="block";
+      poInfo.innerHTML=`<b>Style:</b> ${esc(po.style||"—")} &nbsp;·&nbsp; <b>Order qty:</b> ${num(po.quantity)} pcs &nbsp;·&nbsp; <b>Garment:</b> ${esc(po.garment||"—")} &nbsp;·&nbsp; <b>Currency:</b> ${esc(po.currency||"USD")}`;
+    } else { poInfo.style.display="none"; }
     recalc();
   }
   function recalc(){
@@ -1774,6 +1803,11 @@ function editSub(id){
     else { DB.subcontract.push({id:uid("sc"),...rec,enteredBy:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
     await save(); closeModal(); VIEWS.subcontract(); toast(id?"Entry updated":"Sub-contract production added","ok");
   };
+}
+function subAddPO(mode){
+  closeModal();
+  if(mode==="import") openImport(); else editPO();
+  toast("Add the PO, then open Sub Contract → + Add production again","ok");
 }
 function delSub(id){
   confirmModal("Delete entry","Moves to the Recycle Bin (kept 30 days).",async()=>{
@@ -1816,7 +1850,9 @@ function exportSubcontract(){
   if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
   let rows=DB.subcontract.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
   if(SUB_FILTER.sub!=="All") rows=rows.filter(e=>e.subId===SUB_FILTER.sub);
-  if(!rows.length){ toast("Nothing to export","warn"); return; }
+  if(SUB_FILTER.from||SUB_FILTER.to) rows=rows.filter(subInRange);
+  else rows=rows.filter(e=>monthKey(e.date)===SUB_FILTER.month);
+  if(!rows.length){ toast("Nothing to export in this view","warn"); return; }
   const data=rows.map(e=>{ const po=poByNumber(e.poId); return {
     Date:e.date||"", "Sub-factory":subName(e.subId), PO:po?po.poNumber:"", Style:e.style||(po?po.style:"")||"",
     "Daily out":Number(e.qty||0), "CM price":Number(e.cmPrice||0), "Cost adjustment":Number(e.costAdj||0),
