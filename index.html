@@ -2471,17 +2471,23 @@ async function pdfExtractLayout(file){
   for(let p=1;p<=maxP;p++){
     const page=await pdf.getPage(p);
     const tc=await page.getTextContent();
-    // group items into lines by y, order by x
-    const rows={};
-    tc.items.forEach(it=>{
-      if(!it.str || !it.str.trim()) return;
-      const x=it.transform[4], y=Math.round(it.transform[5]);
-      // bucket y to nearest 2px to tolerate tiny baseline shifts
-      const key=Math.round(y/2)*2;
-      (rows[key]=rows[key]||[]).push({x,s:it.str});
-    });
-    const ys=Object.keys(rows).map(Number).sort((a,b)=>b-a); // top→bottom (pdf y is bottom-up)
-    const lines=ys.map(k=> rows[k].sort((a,b)=>a.x-b.x).map(o=>o.s).join(" ").replace(/\s+/g," ").trim());
+    // group items into visual rows. Some PO templates render one row with
+    // tiny baseline shifts (e.g. a big style-code sits a few px below "STYLE#",
+    // and the price/USD a px above) — a fixed y-grid would split these across
+    // lines and scramble "STYLE# … DDP 7.6300 USD". So we CHAIN-cluster: walk
+    // items top→bottom and keep adding to the current row while the baseline
+    // gap stays small, starting a new row only at a real line break.
+    const items=tc.items.filter(it=>it.str && it.str.trim())
+                        .map(it=>({x:it.transform[4], y:it.transform[5], s:it.str}));
+    items.sort((a,b)=> (b.y - a.y) || (a.x - b.x));   // top→bottom (pdf y is bottom-up)
+    const TOL=4;   // px — within this of the previous baseline = same visual row
+    const rowsArr=[]; let cur=null, lastY=null;
+    for(const it of items){
+      if(cur && Math.abs(it.y-lastY)<=TOL){ cur.push(it); }
+      else { cur=[it]; rowsArr.push(cur); }
+      lastY=it.y;
+    }
+    const lines=rowsArr.map(row=> row.sort((a,b)=>a.x-b.x).map(o=>o.s).join(" ").replace(/\s+/g," ").trim());
     pages.push(lines);
   }
   return pages;   // array of pages, each an array of line strings
@@ -2568,17 +2574,19 @@ function parseShiranPO(pages){
     }
     lines.push({style:lstyle,color:lcolor,label:llabel,pack:lpack,price:lprice,qty:lqty});
   }
+  // drop repeated STYLE# headers that carry no quantity (PO summary / UPC / BOM pages)
+  const orderLines=lines.filter(l=>Number(l.qty||0)>0);
   // any line whose price didn't parse → fall back to the first price on the PO
-  const firstPrice=(lines.find(l=>l.price>0)||{}).price||Number((find(/([\d,]+\.\d{2,4})\s*USD/)||"0").replace(/,/g,""))||0;
-  lines.forEach(l=>{ if(!l.price) l.price=firstPrice; });
+  const firstPrice=(orderLines.find(l=>l.price>0)||{}).price||Number((find(/([\d,]+\.\d{2,4})\s*USD/)||"0").replace(/,/g,""))||0;
+  orderLines.forEach(l=>{ if(!l.price) l.price=firstPrice; });
 
-  const lineQtySum=lines.reduce((s,l)=>s+Number(l.qty||0),0);
+  const lineQtySum=orderLines.reduce((s,l)=>s+Number(l.qty||0),0);
   const quantity=headerQty||lineQtySum||0;
-  const priceSet=[...new Set(lines.map(l=>l.price).filter(p=>p>0))];
+  const priceSet=[...new Set(orderLines.map(l=>l.price).filter(p=>p>0))];
   const unitPrice=priceSet.length===1?priceSet[0]:(firstPrice||0);
-  const colorList=[...new Set(lines.map(l=>l.color).filter(Boolean))];
+  const colorList=[...new Set(orderLines.map(l=>l.color).filter(Boolean))];
   if(colorList.length) color=colorList.join(", ");
-  const styleList=[...new Set(lines.map(l=>l.style).filter(Boolean))];
+  const styleList=[...new Set(orderLines.map(l=>l.style).filter(Boolean))];
 
   const noteBits=[];
   if(priceSet.length>1) noteBits.push(priceSet.length+" prices: "+priceSet.map(p=>"$"+p.toFixed(2)).join(" / ")+" — see price breakdown");
@@ -2593,7 +2601,7 @@ function parseShiranPO(pages){
   return {
     poNumber, buyer, buyerCountry:"United States", vendor:"Active Plus Trading-FZCO",
     style, garment: garment? garment.replace(/\s+/g," ").replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase()) : "",
-    fabric:"", color, quantity, unitPrice, lines, currency:"USD",
+    fabric:"", color, quantity, unitPrice, lines:orderLines, currency:"USD",
     orderDate:issue||today(), deliveryDate:etd||"", eta:eta||"",
     shipTerms:(shipTerms||"").trim(), shipVia, hts, retail:0,
     sizes, sizeBreakdown, notes:noteBits.join(" · "),
