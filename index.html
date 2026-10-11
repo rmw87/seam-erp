@@ -81,6 +81,12 @@
   .navscrim{display:none; position:fixed; inset:0; background:rgba(10,18,35,.5); z-index:55; opacity:0; transition:opacity .2s}
   body.nav-open .navscrim{opacity:1}
 
+  /* ---------- Trade-mark footer (RMW) ---------- */
+  .appfoot{margin-top:auto; text-align:center; padding:16px 16px calc(18px + env(safe-area-inset-bottom)); font-size:11px; color:var(--ink-faint)}
+  .appfoot .rmw{cursor:pointer; color:var(--ink-faint); opacity:.55; letter-spacing:.14em; font-weight:600; transition:opacity .15s}
+  .appfoot .rmw:hover{opacity:.9}
+  .appfoot .rmwc{margin-left:8px; color:var(--ink-soft); font-weight:600}
+
   /* ---------- Buttons / inputs ---------- */
   .btn{font-family:inherit; font-size:13px; font-weight:600; border-radius:8px; padding:8px 14px; border:1px solid var(--line); background:var(--surface); color:var(--ink); cursor:pointer; display:inline-flex; gap:7px; align-items:center; white-space:nowrap}
   .btn:hover{border-color:#c3ccd8}
@@ -199,16 +205,16 @@
     body.nav-open .navscrim{pointer-events:auto}
     /* sidebar becomes an off-canvas drawer that slides in from the left */
     .side{
-      position:fixed; top:0; left:0; bottom:0; width:264px; height:100vh; z-index:60;
+      position:fixed; top:0; left:0; bottom:0; width:264px; height:100vh; height:100dvh; z-index:60;
       flex-direction:column; overflow:hidden; transform:translateX(-100%);
       transition:transform .25s ease; box-shadow:0 20px 60px rgba(0,0,0,.45);
     }
     body.nav-open .side{transform:translateX(0)}
-    nav{display:block; flex:1; overflow:auto; padding:10px 12px}
+    nav{display:block; flex:1; overflow:auto; padding:10px 12px; min-height:0}
     .nav-group{display:block}
     .brand .sub{display:block}
     .nav-item{font-size:14px; padding:11px 12px}
-    .side-foot{display:block}
+    .side-foot{display:block; flex-shrink:0; padding-bottom:calc(14px + env(safe-area-inset-bottom))}
     .topbar{position:static; padding:14px 16px 10px}
     .topbar h2{font-size:19px}
     .content{padding:16px 15px 70px}
@@ -330,6 +336,9 @@
     <div class="right" id="topActions"></div>
   </div>
   <div class="content" id="view"></div>
+  <div class="appfoot">
+    <span class="rmw" id="rmwLink" onclick="rmwContact()">RMW</span><span class="rmwc" id="rmwContact"></span>
+  </div>
 </div>
 
 <div class="scrim" id="scrim"><div class="modal" id="modal"></div></div>
@@ -869,6 +878,7 @@ function buildNav(){
 }
 function toggleNav(){ document.body.classList.toggle("nav-open"); }
 function closeNav(){ document.body.classList.remove("nav-open"); }
+function rmwContact(){ const el=document.getElementById("rmwContact"); if(el) el.textContent = el.textContent ? "" : "· Contact Us 0719 404 604"; }
 const ADMIN_ROUTES = ["users","trash","settings"];
 const SUPER_ROUTES = ["superadmin"];
 function go(route){
@@ -3687,7 +3697,7 @@ function renderUserChrome(){
   $("#sideFoot").innerHTML=`
     <div class="userchip"><div class="avatar">${esc(initials(CURRENT.name||CURRENT.username))}</div>
       <div><div class="un">${esc(CURRENT.name||CURRENT.username)}</div>
-      <div class="ur">${esc(CURRENT.role==="admin"?"Administrator":"Staff")}${CURRENT.twoFA?" · 2FA on":""}</div></div></div>
+      <div class="ur">${esc(roleLabel(CURRENT.role))}${CURRENT.superadmin?" · ★":""}${CURRENT.twoFA?" · 2FA on":""}</div></div></div>
     ${FB_ON?`<div style="font-size:11px;color:#7fd8b0;margin-bottom:8px">☁ Shared database — on</div>`:""}
     ${isAdmin()?`<button onclick="go('settings')" style="margin-bottom:8px">Settings</button>`:""}
     <button onclick="doLogout()">Sign out</button>`;
@@ -3712,7 +3722,7 @@ function enterApp(){
    ============================================================ */
 VIEWS.account=function(){
   if(!CURRENT) return showLogin();
-  setHead("Account","My Account");
+  setHead("Account","My Account",`<button class="btn danger" onclick="doLogout()">Sign out</button>`);
   const u=CURRENT;
   const recoveryPanel = isAdmin() ? `
     <div class="panel"><div class="panel-head"><h3>Recovery code</h3>
@@ -3739,7 +3749,13 @@ VIEWS.account=function(){
             : `<button class="btn primary" onclick="enable2FA()">Set up two-factor</button>`}
         </div></div>
     </div>
-    ${recoveryPanel}`;
+    ${recoveryPanel}
+    <div class="panel"><div class="panel-head"><h3>Session</h3>
+      <div class="actions"><span class="muted" style="font-size:12.5px">Signed in as <b>${esc(u.name||u.username)}</b> · ${esc(roleLabel(u.role))}${u.superadmin?" · ★ Super":""}</span></div></div>
+      <div class="panel-pad">
+        <p class="muted" style="font-size:13px;margin:0 0 12px">Sign out of this device. Your data stays safe in the shared database.</p>
+        <button class="btn danger" onclick="doLogout()">Sign out</button>
+      </div></div>`;
 };
 async function changeMyPassword(){
   const oldp=$("#cp_old").value, np=$("#cp_new").value, cf=$("#cp_c").value;
