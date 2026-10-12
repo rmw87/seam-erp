@@ -3192,14 +3192,17 @@ function setupDropzone(){
 VIEWS.users=function(){
   if(!isAdmin()){ go("dashboard"); return; }
   setHead("Administration","Users",`<button class="btn primary" onclick="editUser()">+ New user</button>`);
-  const admins=DB.users.filter(u=>u.role==="admin"&&u.active).length;
-  const rows=DB.users.map(u=>{
+  // Super-admin accounts are kept secret — never listed in the ordinary Users tab
+  // (they are managed only from the hidden Super Admin panel).
+  const visible=DB.users.filter(u=>!u.superadmin);
+  const admins=visible.filter(u=>u.role==="admin"&&u.active).length;
+  const rows=visible.map(u=>{
     const you=CURRENT&&u.id===CURRENT.id;
     return `<tr>
       <td><div class="userchip" style="margin:0"><div class="avatar">${esc(initials(u.name||u.username))}</div>
         <div><div class="strong">${esc(u.name||"—")} ${you?'<span class="tag">you</span>':""}</div>
         <div class="muted" style="font-size:12px">@${esc(u.username)}${u.email?" · "+esc(u.email):""}</div></div></div></td>
-      <td><span class="rolepill ${u.role==="admin"?"rp-admin":"rp-user"}">${esc(roleLabel(u.role))}</span>${u.superadmin?' <span class="rolepill rp-admin" title="Super administrator">★ Super</span>':""}</td>
+      <td><span class="rolepill ${u.role==="admin"?"rp-admin":"rp-user"}">${esc(roleLabel(u.role))}</span></td>
       <td>${u.active?pill("Active","p-green"):pill("Inactive","p-grey")}</td>
       <td><span class="secbadge ${u.twoFA?"sb-on":"sb-off"}">${u.twoFA?"2FA on":"2FA off"}</span></td>
       <td>${u.role==="admin"?'<span class="muted" style="font-size:12px">All</span>':(u.allowedTabs?`<span class="tag">${u.allowedTabs.length} tabs</span>`:'<span class="muted" style="font-size:12px">All</span>')}</td>
@@ -3214,7 +3217,7 @@ VIEWS.users=function(){
   }).join("");
   $("#view").innerHTML=`
     <div class="notice">Accounts control who can sign in. <b>Admins</b> see everything and manage users/settings. For <b>staff</b>, use <b>Tabs</b> to choose which pages they can open. Passwords are stored hashed; for an internet-facing rollout, add proper server-side authentication.</div>
-    <div class="panel"><div class="panel-head"><h3>User accounts</h3><div class="meta">${DB.users.length} account${DB.users.length===1?"":"s"} · ${admins} active admin${admins===1?"":"s"}</div></div>
+    <div class="panel"><div class="panel-head"><h3>User accounts</h3><div class="meta">${visible.length} account${visible.length===1?"":"s"} · ${admins} active admin${admins===1?"":"s"}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>User</th><th>Role</th><th>Status</th><th>2FA</th><th>Tabs</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div></div>`;
