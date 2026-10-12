@@ -696,6 +696,7 @@ async function initData(){
   ];
   if(!DB.roleTabs) DB.roleTabs={};   // roleKey → array of allowed tab ids (default-applied on user create); missing = all
   if(!DB.activity) DB.activity=[];   // super-admin activity log
+  syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
   if(DB.users.length && !DB.users.some(u=>u.superadmin)){
     const admins=DB.users.filter(u=>u.role==="admin").sort((a,b)=>String(a.created||"").localeCompare(String(b.created||"")));
@@ -1165,17 +1166,19 @@ VIEWS.suppliers=function(){
   if(!DB.suppliers.length){ return emptyState("No suppliers yet","Add the mills and trim houses you import from.","editSupplier()"); }
   const rows=DB.suppliers.map(s=>{
     const lines=DB.bom.filter(m=>m.supplierId===s.id);
+    const invItems=(DB.inventory||[]).filter(it=>(it.supplier||"").trim().toLowerCase()===(s.name||"").trim().toLowerCase());
     return `<tr>
-      <td><div class="strong">${esc(s.name)}</div><div class="muted" style="font-size:12px">${esc(s.country)}</div></td>
+      <td><div class="strong">${esc(s.name)}</div><div class="muted" style="font-size:12px">${esc(s.country)}${s.fromInventory?(s.country?" · ":"")+"from inventory":""}</div></td>
       <td>${esc(s.material||"—")}</td>
       <td>${esc(s.contact||"—")}<div class="muted" style="font-size:12px">${esc(s.email||"")}</div></td>
       <td class="num">${lines.length} line${lines.length===1?"":"s"}</td>
+      <td class="num">${invItems.length?invItems.length+" item"+(invItems.length===1?"":"s"):"—"}</td>
       <td class="num"><button class="btn sm" onclick="editSupplier('${s.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delSupplier('${s.id}')">Delete</button>`:""}</td>
     </tr>`;
   }).join("");
   $("#view").innerHTML=`<div class="panel"><div class="panel-head"><h3>Suppliers</h3><div class="meta">${DB.suppliers.length} vendors</div></div>
-    <div class="panel-body"><table><thead><tr><th>Supplier</th><th>Supplies</th><th>Contact</th><th class="num">BOM lines</th><th></th></tr></thead>
+    <div class="panel-body" style="overflow-x:auto"><table><thead><tr><th>Supplier</th><th>Supplies</th><th>Contact</th><th class="num">BOM lines</th><th class="num">Inventory</th><th></th></tr></thead>
     <tbody>${rows}</tbody></table></div></div>`;
 };
 function editSupplier(id){
@@ -2576,8 +2579,9 @@ async function commitInvImport(){
     if(ex){ Object.assign(ex, r); }   // update in place (keeps its id)
     else { const o={id:uid("inv"),...r}; DB.inventory.push(o); byCode[r.code.toLowerCase()]=o; }
   });
+  const supAdded=syncSuppliersFromInventory();
   await save(); INV_IMPORT=null; closeModal(); VIEWS.inventory();
-  toast(`Imported ${d.rows.length} items (${d.newCount} new, ${d.updCount} updated)`,"ok");
+  toast(`Imported ${d.rows.length} items (${d.newCount} new, ${d.updCount} updated)`+(supAdded?` · ${supAdded} supplier(s) added`:""),"ok");
 }
 
 function editInv(id){
@@ -2607,6 +2611,7 @@ function editInv(id){
       d.adjust=Number(d.adjust||0); d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
       if(d.received-d.issued-d.adjust < -0.0001){ toast("That leaves a negative balance — check issued / adjustment","warn"); return; }
       if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
+      syncSuppliersFromInventory();
       logAct(id?"Edited inventory item":"Added inventory item","Inventory", (d.code?d.code+" · ":"")+(d.item||""));
       await save(); closeModal(); VIEWS.inventory(); toast(id?"Item updated":"Item added","ok");
     }});
@@ -3168,6 +3173,20 @@ function upsertSupplier(name){
   let s=DB.suppliers.find(x=>x.name.toLowerCase()===name.toLowerCase());
   if(!s){ s={id:uid("sup"),name,country:"",material:"",contact:"",email:""}; DB.suppliers.push(s); }
   return s.id;
+}
+/* make sure every supplier used on an inventory item also exists in the Suppliers list */
+function syncSuppliersFromInventory(){
+  if(!DB.suppliers) DB.suppliers=[];
+  const have=new Set(DB.suppliers.map(s=>(s.name||"").trim().toLowerCase()));
+  let added=0;
+  (DB.inventory||[]).forEach(it=>{
+    const nm=(it.supplier||"").trim();
+    if(nm && !have.has(nm.toLowerCase())){
+      DB.suppliers.push({id:uid("sup"),name:nm,country:"",material:it.category||"",contact:"",email:"",fromInventory:true});
+      have.add(nm.toLowerCase()); added++;
+    }
+  });
+  return added;
 }
 async function commitImport(thenEdit){
   const d=PENDING; if(!d) return;
