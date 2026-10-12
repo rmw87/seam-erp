@@ -1323,6 +1323,8 @@ function openPO(id){
 
   ${poPriceBreakdownHTML(p)}
 
+  ${poColourBreakdownHTML(p)}
+
   <div class="grid2">
     <div class="panel"><div class="panel-head"><h3>Order details</h3></div><div class="panel-pad">
       ${detailLine("Buyer",buyerName(p.buyerId))}
@@ -1371,6 +1373,43 @@ async function updatePOLinePrice(poId,idx,val){
   p.lines[idx].price=Number(val||0);
   const ps=poPriceSet(p); if(ps.length===1) p.unitPrice=ps[0];
   await save(); openPO(poId); toast("Price updated","ok");
+}
+/* order lines in a sensible column order so a colour × size grid reads naturally */
+const SIZE_ORDER=["XXS","XS","S","M","L","XL","XXL","XXXL","2XL","3XL","1X","2X","3X","OS"];
+function sizeColsFor(lines){
+  const set=new Set();
+  lines.forEach(l=>{ const sb=l.sizeBreakdown; if(sb) Object.keys(sb).forEach(s=>set.add(s)); });
+  return [...set].sort((a,b)=>{ let ia=SIZE_ORDER.indexOf(a), ib=SIZE_ORDER.indexOf(b);
+    if(ia<0) ia=99; if(ib<0) ib=99; return ia-ib || a.localeCompare(b,undefined,{numeric:true}); });
+}
+// colour × size breakdown table (shows each colour part separately), used in review + PO detail
+function colourSizeTableHTML(lines,cur){
+  const L=(lines||[]).filter(l=>l&&l.sizeBreakdown&&Object.keys(l.sizeBreakdown).length);
+  if(L.length<1) return "";
+  const cols=sizeColsFor(L);
+  const colTot={}; cols.forEach(c=>colTot[c]=0); let grand=0;
+  const body=L.map((l,idx)=>{
+    const sb=l.sizeBreakdown||{}; let rowTot=0;
+    const cells=cols.map(c=>{ const v=Number(sb[c]||0); colTot[c]+=v; rowTot+=v; return `<td class="num">${v?num(v):"·"}</td>`; }).join("");
+    grand+=rowTot;
+    const price=Number(l.price||0);
+    return `<tr><td class="strong">${esc(l.color||l.style||("Part "+(idx+1)))}${l.pack?` <span class="muted" style="font-size:11px">· ${esc(l.pack)}</span>`:""}</td>${cells}<td class="num strong">${num(rowTot)}</td>${price?`<td class="num">${money(price,cur)}</td>`:""}</tr>`;
+  }).join("");
+  const anyPrice=L.some(l=>Number(l.price||0));
+  const footCells=cols.map(c=>`<td class="num strong">${num(colTot[c])}</td>`).join("");
+  return `<table>
+    <thead><tr><th>Colour part</th>${cols.map(c=>`<th class="num">${esc(c)}</th>`).join("")}<th class="num">Total</th>${anyPrice?"<th class=\"num\">Price</th>":""}</tr></thead>
+    <tbody>${body}</tbody>
+    <tfoot><tr><td class="strong">Total</td>${footCells}<td class="num strong">${num(grand)}</td>${anyPrice?"<td></td>":""}</tr></tfoot>
+  </table>`;
+}
+function poColourBreakdownHTML(p){
+  const L=poLines(p);
+  if(L.length<2 && !(L[0]&&L[0].sizeBreakdown)) return "";
+  const tbl=colourSizeTableHTML(L,p.currency);
+  if(!tbl) return "";
+  return `<div class="panel"><div class="panel-head"><h3>Colour / size breakdown</h3><div class="meta">${L.length} colour part${L.length===1?"":"s"} · ${num(p.quantity)} pcs</div></div>
+    <div class="panel-body" style="overflow-x:auto">${tbl}</div></div>`;
 }
 function seamHTML(p){
   const prod=p.production||{}; const cur=currentStage(p); const target=Number(p.quantity||0);
@@ -2994,21 +3033,27 @@ function parseShiranPO(pages){
     const lstyle=sm[1];
     const pm=allLines[i].match(/([\d,]+\.\d{2,4})\s*USD/);   // price sits on the STYLE# line
     let lprice=pm?Number(pm[1].replace(/,/g,""))||0:0;
-    let lqty=0,lcolor="",llabel="",lpack="";
+    let lqty=0,lcolor="",llabel="",lpack="",lsizes=null,lsb=null;
     for(let k=i+1;k<allLines.length;k++){
       if(/STYLE#/.test(allLines[k])) break;        // reached the next block
       if(!lprice){ const pm2=allLines[k].match(/([\d,]+\.\d{2,4})\s*USD/); if(pm2) lprice=Number(pm2[1].replace(/,/g,""))||0; }
       if(!lcolor){ const cm=allLines[k].match(/Exenta Color\s*-\s*Descr\s*(.+?)\s+(?:NRF|LABEL|CONTENT|$)/); if(cm) lcolor=cm[1].replace(/\s+Color.*$/,"").trim(); }
       if(!llabel){ const lm=allLines[k].match(/LABEL[ \t]+([A-Za-z0-9]+)/); if(lm) llabel=lm[1]; }
       if(!lpack){ const pkm=allLines[k].match(/PACK\s*:?\s*([A-Za-z0-9]+)/); if(pkm) lpack=pkm[1]; }
+      if(/^SIZES\b/.test(allLines[k])){ lsizes=allLines[k].replace(/^SIZES/,"").replace(/TOTAL.*$/,"").trim().split(/\s+/).filter(Boolean); }
       if(/^QTY\b/.test(allLines[k])){
         const nums=allLines[k].replace(/^QTY/,"").trim().split(/\s+/).map(x=>Number(x.replace(/,/g,""))).filter(n=>!isNaN(n));
         if(nums.length){ const last=nums[nums.length-1], rest=nums.slice(0,-1).reduce((a,b)=>a+b,0);
           lqty=(nums.length>1 && Math.abs(last-rest)<0.5)?last:nums.reduce((a,b)=>a+b,0); }
+        // this block's own size breakdown (colour part kept separate)
+        if(lsizes && lsizes.length){
+          const qtys=(nums.length===lsizes.length+1)?nums.slice(0,-1):nums;
+          lsb={}; lsizes.forEach((sz,ix)=>{ if(qtys[ix]!=null) lsb[sz]=(lsb[sz]||0)+qtys[ix]; });
+        }
         break;                                     // first QTY row after STYLE# is this block's
       }
     }
-    lines.push({style:lstyle,color:lcolor,label:llabel,pack:lpack,price:lprice,qty:lqty});
+    lines.push({style:lstyle,color:lcolor,label:llabel,pack:lpack,price:lprice,qty:lqty,sizes:lsizes||[],sizeBreakdown:lsb||null});
   }
   // drop repeated STYLE# headers that carry no quantity (PO summary / UPC / BOM pages)
   const orderLines=lines.filter(l=>Number(l.qty||0)>0);
@@ -3151,6 +3196,7 @@ function reviewImport(d){
         ${sbHtml}
         ${matHtml}
       </div>
+      ${(dLines.filter(l=>l.sizeBreakdown&&Object.keys(l.sizeBreakdown).length).length>1)?`<div style="margin-top:12px"><div class="k" style="margin-bottom:6px">Colour / size breakdown — ${dLines.length} parts</div><div style="overflow-x:auto">${colourSizeTableHTML(dLines,d.currency)}</div></div>`:""}
     </div>
     <div class="modal-foot">
       <button class="btn ghost" id="mcancel">Cancel</button>
@@ -3192,7 +3238,7 @@ async function commitImport(thenEdit){
   const d=PENDING; if(!d) return;
   const buyerId=upsertBuyer(d.buyer,{country:d.buyerCountry,terms:d.shipTerms});
   const pn=(d.poNumber||"").trim();
-  const lines=Array.isArray(d.lines)&&d.lines.length?d.lines.map(l=>({style:l.style||"",color:l.color||"",label:l.label||"",pack:l.pack||"",price:Number(l.price||0),qty:Number(l.qty||0)})):null;
+  const lines=Array.isArray(d.lines)&&d.lines.length?d.lines.map(l=>({style:l.style||"",color:l.color||"",label:l.label||"",pack:l.pack||"",price:Number(l.price||0),qty:Number(l.qty||0),sizes:Array.isArray(l.sizes)?l.sizes:[],sizeBreakdown:l.sizeBreakdown||null})):null;
   // a PO number must be unique — if it already exists, this is a REVISION: update it in place
   const existing = pn ? DB.pos.find(p=>(p.poNumber||"").trim().toLowerCase()===pn.toLowerCase()) : null;
   let poId;
