@@ -1205,7 +1205,15 @@ VIEWS.pos=function(){
   setHead("Sales","Purchase Orders",`<button class="btn" onclick="openImport()">⤓ Import PO (PDF)</button> <button class="btn primary" onclick="editPO()">+ New PO</button>`);
   if(!DB.buyers.length){ return emptyState("Add a buyer first","Purchase orders are placed by buyers — create one to begin.","go('buyers')","Go to buyers"); }
   const tabs=["All"].concat(PO_STATUS);
-  const filtered = DB.pos.filter(p=>FILTERS.po==="All"||p.status===FILTERS.po);
+  const q=(PO_SEARCH||"").trim().toLowerCase();
+  const filtered = DB.pos.filter(p=>{
+    if(FILTERS.po!=="All" && p.status!==FILTERS.po) return false;
+    if(q){
+      const hay=((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+(p.colors||"")+" "+buyerName(p.buyerId)).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
   const rows = filtered.length?filtered.map(p=>{
     const mp=materialProgress(p.id), pp=productionProgress(p);
     return `<tr class="clk" data-po="${p.id}">
@@ -1218,15 +1226,23 @@ VIEWS.pos=function(){
       <td style="min-width:110px"><div class="bar"><i style="width:${pp}%"></i></div></td>
       <td class="num">${fmtDate(p.deliveryDate)}</td>
     </tr>`;
-  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No orders in this status.</td></tr>`;
+  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">${q?"No orders match your search.":"No orders in this status."}</td></tr>`;
   $("#view").innerHTML=`
-    <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.po===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
-    <div class="panel"><div class="panel-body"><table>
+    <div class="toolbar">
+      <div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.po===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div>
+      <input id="poSearch" placeholder="Search PO number or style…" value="${esc(PO_SEARCH)}" style="flex:1;min-width:150px;max-width:320px">
+      ${q?`<button class="btn sm" id="poSearchClear">Clear</button>`:""}
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Purchase orders</h3><div class="meta">${filtered.length} order${filtered.length===1?"":"s"}${q?" · matching “"+esc(PO_SEARCH)+"”":""}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
       <thead><tr><th>PO / Style</th><th>Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.po=f.dataset.f; VIEWS.pos(); });
+  const se=$("#poSearch"); if(se) se.oninput=e=>{ PO_SEARCH=e.target.value; const v=e.target.value; VIEWS.pos(); const n=$("#poSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const sc=$("#poSearchClear"); if(sc) sc.onclick=()=>{ PO_SEARCH=""; VIEWS.pos(); };
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
 };
+let PO_SEARCH="";
 function poFields(){
   return [
     {name:"poNumber",label:"PO number",required:true,half:true,placeholder:"PO-2406-XX"},
@@ -1250,6 +1266,9 @@ function editPO(id){
   openModal({title:id?"Edit purchase order":"New purchase order", wide:true, record:r, submitLabel:id?"Save PO":"Create PO",
     fields:poFields(),
     onSubmit:async d=>{
+      const pn=(d.poNumber||"").trim();
+      if(DB.pos.some(p=>(p.poNumber||"").trim().toLowerCase()===pn.toLowerCase() && p.id!==id)){
+        toast("PO number "+pn+" already exists — use a unique number","warn"); return; }
       if(id){ Object.assign(r,d); }
       else { DB.pos.push({id:uid("po"),...d,production:{Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0}}); }
       logAct(id?"Edited PO":"Created PO","Purchase Orders", d.poNumber||"");
@@ -3106,11 +3125,16 @@ function reviewImport(d){
   const mats=(d.materials||[]);
   const matHtml=mats.length?`<div style="grid-column:1/-1;margin-top:8px"><div class="k" style="margin-bottom:6px">Bill of materials — ${mats.length} line${mats.length===1?"":"s"} to create</div>
     ${mats.map(m=>`<span class="matchip">${esc(m.material)} <span class="muted">· ${esc(m.type||"")}${m.supplier?" · "+esc(m.supplier):""}</span></span>`).join("")}</div>`:"";
+  const pn=(d.poNumber||"").trim();
+  const existingPO = pn ? DB.pos.find(p=>(p.poNumber||"").trim().toLowerCase()===pn.toLowerCase()) : null;
+  const revNotice = existingPO
+    ? `<div class="notice" style="margin-top:0;background:#fff6e8;border-color:#f0d9a8"><b>⚠ PO ${esc(pn)} already exists.</b> Importing will <b>update it as a revision</b> — order details are refreshed, but production progress, status and shipments are kept. PO numbers can't be duplicated.</div>`
+    : `<div class="notice" style="margin-top:0">Read from the document. Check the values, then create the order — nothing is saved until you confirm.</div>`;
   $("#modal").className="modal wide";
   $("#modal").innerHTML=`
-    <div class="modal-head"><h3>Review imported order — ${esc(d.poNumber||"PO")}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-head"><h3>${existingPO?"Review revision":"Review imported order"} — ${esc(d.poNumber||"PO")}</h3><div class="x" id="mx">×</div></div>
     <div class="modal-body">
-      <div class="notice" style="margin-top:0">Read from the document. Check the values, then create the order — nothing is saved until you confirm.</div>
+      ${revNotice}
       <div class="review-grid">
         ${row("PO number",d.poNumber)} ${row("Buyer",d.buyer)}
         ${row("Style",d.style)} ${row("Garment",d.garment)}
@@ -3125,13 +3149,13 @@ function reviewImport(d){
     </div>
     <div class="modal-foot">
       <button class="btn ghost" id="mcancel">Cancel</button>
-      <button class="btn" id="medit">Edit details first</button>
-      <button class="btn primary" id="mcreate">Create order + BOM</button>
+      ${existingPO?"":`<button class="btn" id="medit">Edit details first</button>`}
+      <button class="btn primary" id="mcreate">${existingPO?"Update PO (revision)":"Create order + BOM"}</button>
     </div>`;
   $("#scrim").classList.add("open");
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
   $("#mcreate").onclick=()=>commitImport(false);
-  $("#medit").onclick=()=>commitImport(true);
+  const me=$("#medit"); if(me) me.onclick=()=>commitImport(true);
 }
 function upsertBuyer(name,extra={}){
   if(!name) name="Unknown buyer";
@@ -3148,12 +3172,35 @@ function upsertSupplier(name){
 async function commitImport(thenEdit){
   const d=PENDING; if(!d) return;
   const buyerId=upsertBuyer(d.buyer,{country:d.buyerCountry,terms:d.shipTerms});
-  const poId=uid("po");
+  const pn=(d.poNumber||"").trim();
+  const lines=Array.isArray(d.lines)&&d.lines.length?d.lines.map(l=>({style:l.style||"",color:l.color||"",label:l.label||"",pack:l.pack||"",price:Number(l.price||0),qty:Number(l.qty||0)})):null;
+  // a PO number must be unique — if it already exists, this is a REVISION: update it in place
+  const existing = pn ? DB.pos.find(p=>(p.poNumber||"").trim().toLowerCase()===pn.toLowerCase()) : null;
+  let poId;
+  if(existing){
+    poId=existing.id;
+    Object.assign(existing,{
+      buyerId, style:d.style||existing.style, garment:d.garment||existing.garment, fabric:d.fabric||existing.fabric,
+      quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||existing.currency||"USD",
+      lines,
+      deliveryDate:d.deliveryDate||existing.deliveryDate, eta:d.eta||existing.eta,
+      colors:d.color||existing.colors, sizes:d.sizes||existing.sizes, sizeBreakdown:d.sizeBreakdown||existing.sizeBreakdown,
+      shipTerms:d.shipTerms||existing.shipTerms, shipVia:d.shipVia||existing.shipVia, hts:d.hts||existing.hts,
+      retail:Number(d.retail||existing.retail||0), vendor:d.vendor||existing.vendor, notes:d.notes||existing.notes,
+      revisedAt:today(), revCount:Number(existing.revCount||0)+1
+    });
+    // production progress, status, id and existing BOM are kept as-is
+    logAct("Revised PO (import)","Purchase Orders", pn+" · rev "+existing.revCount);
+    await save(); closeModal(); PENDING=null;
+    toast("PO "+pn+" updated as a revision — production progress kept","ok");
+    openPO(poId); return;
+  }
+  poId=uid("po");
   DB.pos.push({
-    id:poId, poNumber:d.poNumber||("PO-"+Date.now()), buyerId,
+    id:poId, poNumber:pn||("PO-"+Date.now()), buyerId,
     style:d.style||"", garment:d.garment||"Garment", fabric:d.fabric||"",
     quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||"USD",
-    lines:Array.isArray(d.lines)&&d.lines.length?d.lines.map(l=>({style:l.style||"",color:l.color||"",label:l.label||"",pack:l.pack||"",price:Number(l.price||0),qty:Number(l.qty||0)})):null,
+    lines,
     orderDate:d.orderDate||today(), deliveryDate:d.deliveryDate||"", eta:d.eta||"",
     status:"Confirmed", colors:d.color||"", sizes:d.sizes||"", sizeBreakdown:d.sizeBreakdown||null,
     shipTerms:d.shipTerms||"", shipVia:d.shipVia||"", hts:d.hts||"", retail:Number(d.retail||0),
@@ -3165,9 +3212,9 @@ async function commitImport(thenEdit){
       color:m.color||"",unit:m.unit||"pcs",qtyPerGarment:"",totalQty:"",supplierId:upsertSupplier(m.supplier),
       unitCost:"",status:"Required",eta:""});
   });
-  logAct("Imported PO","Purchase Orders", (d.poNumber||"order")+" · "+(d.garment||""));
+  logAct("Imported PO","Purchase Orders", (pn||"order")+" · "+(d.garment||""));
   await save(); closeModal(); PENDING=null;
-  toast("Imported "+(d.poNumber||"order")+" — order, buyer and BOM created","ok");
+  toast("Imported "+(pn||"order")+" — order, buyer and BOM created","ok");
   if(thenEdit) editPO(poId); else openPO(poId);
 }
 
