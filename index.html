@@ -685,6 +685,8 @@ async function initData(){
   if(!DB.subfactories) DB.subfactories=["D & S CLOTHING","R T FASHION","DILKI - I GARMENT","NIMTOP - ATHURUGIRIYA","NIMTOP - KULIYAPITIYA"].map(n=>({id:uid("sf"),name:n}));
   if(!DB.subcontract) DB.subcontract=[];
   if(!DB.subCut) DB.subCut={};   // poId → total cut qty released to sub-contracting
+  if(!DB.finishedGoods) DB.finishedGoods=[];   // excess finished garments held as stock
+  if(!DB.fgSales) DB.fgSales=[];               // sales of finished-goods stock
   // roles (non-admin roles are label + optional default tab access; admin is a power role)
   if(!DB.roles) DB.roles=[
     {key:"user",label:"Staff",admin:false},
@@ -716,7 +718,7 @@ function canDelete(){ return isAdmin() || !!(DB.settings && DB.settings.allowSta
 /* ============================================================
    RECYCLE BIN  (soft delete → restore, auto-purge after 30 days)
    ============================================================ */
-const TRASH_LABEL={buyer:"Buyer",supplier:"Supplier",po:"Purchase order",shipment:"Shipment",daily:"Daily production",inventory:"Inventory item",subcontract:"Sub-contract production"};
+const TRASH_LABEL={buyer:"Buyer",supplier:"Supplier",po:"Purchase order",shipment:"Shipment",daily:"Daily production",inventory:"Inventory item",subcontract:"Sub-contract production",finishedgoods:"Finished goods",fgsale:"Finished-goods sale"};
 function trashPush(type,label,payload){
   DB.trash.push({tid:uid("trash"),type,label,payload,deletedAt:Date.now(),deletedBy:CURRENT?CURRENT.username:""});
 }
@@ -774,6 +776,19 @@ async function softDeleteSub(id){
   trashPush("subcontract", fmtDate(d.date)+" · "+subName(d.subId)+" · "+num(d.qty)+" pcs", {sub:d});
   DB.subcontract=DB.subcontract.filter(x=>x.id!==id); await save();
 }
+async function softDeleteFG(id){
+  const f=(DB.finishedGoods||[]).find(x=>x.id===id); if(!f) return;
+  const po=poByNumber(f.poId);
+  logAct("Deleted finished goods","Finished Goods", (po?po.poNumber+" · ":"")+(f.style||"")+" "+(f.color||"")+" · "+num(f.qty)+" pcs");
+  trashPush("finishedgoods", (f.style||"")+" "+(f.color||"")+" · "+num(f.qty)+" pcs", {fg:f});
+  DB.finishedGoods=DB.finishedGoods.filter(x=>x.id!==id); await save();
+}
+async function softDeleteFGSale(id){
+  const s=(DB.fgSales||[]).find(x=>x.id===id); if(!s) return;
+  logAct("Deleted FG sale","Finished Goods", (s.customer||"")+" · "+num(s.qty)+" pcs");
+  trashPush("fgsale", (s.customer||"Sale")+" · "+num(s.qty)+" pcs", {fgsale:s});
+  DB.fgSales=DB.fgSales.filter(x=>x.id!==id); await save();
+}
 async function restoreTrash(tid){
   const t=DB.trash.find(x=>x.tid===tid); if(!t) return;
   const p=t.payload;
@@ -784,6 +799,8 @@ async function restoreTrash(tid){
   if(t.type==="daily" && p.daily) DB.daily.push(p.daily);
   if(t.type==="inventory" && p.inventory) DB.inventory.push(p.inventory);
   if(t.type==="subcontract" && p.sub) DB.subcontract.push(p.sub);
+  if(t.type==="finishedgoods" && p.fg) DB.finishedGoods.push(p.fg);
+  if(t.type==="fgsale" && p.fgsale) DB.fgSales.push(p.fgsale);
   DB.trash=DB.trash.filter(x=>x.tid!==tid);
   await save();
 }
@@ -825,6 +842,7 @@ const NAV = [
     {id:"production",ico:"◫",label:"Production Stages"},
     {id:"wip",ico:"▥",label:"WIP Report"},
     {id:"export",ico:"➜",label:"Export & Shipment"},
+    {id:"finished",ico:"▣",label:"Finished Goods"},
   ]},
   {grp:"Finance", items:[
     {id:"cheque",ico:"▭",label:"Cheque Printing"},
@@ -851,7 +869,7 @@ function navBadge(id){
   return null;
 }
 /* which operational tabs a staff user may see (admins see all). undefined = all */
-const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","cheque"];
+const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","finished","cheque"];
 const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
@@ -1365,7 +1383,22 @@ function openPO(id){
         ${canDelete()?`<button class="btn danger sm" onclick="delPO('${p.id}')">Delete this purchase order</button>`:`<span class="muted" style="font-size:12px">Deletion is limited to administrators.</span>`}</div>
     </div>
   </div>
-  ${poProductionEntriesHTML(p)}`;
+  ${poProductionEntriesHTML(p)}
+  ${poFinishedGoodsHTML(p)}`;
+}
+function poFinishedGoodsHTML(p){
+  const list=(DB.finishedGoods||[]).filter(f=>f.poId===p.id);
+  const shipped=shippedQty(p.id);
+  const rec=list.reduce((a,f)=>a+Number(f.qty||0),0), bal=list.reduce((a,f)=>a+fgBalance(f),0);
+  const rows=list.map(f=>`<tr><td>${esc(f.style||p.style||"—")}</td><td>${esc(f.color||"—")}</td><td>${esc(f.size||"—")}</td>
+      <td class="num">${num(f.qty)}</td><td class="num">${num(fgSoldQty(f.id))}</td><td class="num strong">${num(fgBalance(f))}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h3>Finished goods (excess)</h3>
+      <div class="meta">order ${num(p.quantity)} · shipped ${num(shipped)}${list.length?` · FG received ${num(rec)} · balance ${num(bal)}`:""}</div>
+      <div class="actions"><button class="btn sm primary" onclick="editFG(null,'${p.id}')">+ Add excess</button>${list.length?` <button class="btn sm" onclick="go('finished')">Open Finished Goods</button>`:""}</div></div>
+    ${list.length?`<div class="panel-body" style="overflow-x:auto"><table>
+      <thead><tr><th>Style</th><th>Colour</th><th>Size</th><th class="num">Received</th><th class="num">Sold</th><th class="num">Balance</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`:`<div class="panel-pad muted" style="font-size:13px">No excess finished goods recorded for this PO. Use <b>+ Add excess</b> to record extra pieces cut over the order qty.</div>`}
+    </div>`;
 }
 /* all factory + sub-contract production logged against this PO — makes the PO sheet a full record */
 function poProductionEntriesHTML(p){
@@ -2121,6 +2154,204 @@ function exportSubcontract(){
 }
 
 /* ============================================================
+   FINISHED GOODS  (excess garments cut over the PO qty)
+   received to FG stock → sold; balance = received − sold
+   ============================================================ */
+function fgSoldQty(fgId){ return (DB.fgSales||[]).filter(s=>s.fgId===fgId).reduce((a,s)=>a+Number(s.qty||0),0); }
+function fgBalance(f){ return Number(f.qty||0)-fgSoldQty(f.id); }
+function fgValue(f){ return fgBalance(f)*Number(f.unitCost||0); }
+function fgSaleTotal(s){ return Number(s.qty||0)*Number(s.unitPrice||0); }
+function fgLabel(f){ const po=poByNumber(f.poId); return (po?po.poNumber+" · ":"")+(f.style||"")+(f.color?" · "+f.color:"")+(f.size?" · "+f.size:""); }
+const FG_FILTER={q:"",tab:"stock"};
+
+VIEWS.finished=function(){
+  setHead("Operations","Finished Goods",
+    `<button class="btn" onclick="exportFinished()">⬆ Export Excel</button> <button class="btn" onclick="sellFG()">+ Record sale</button> <button class="btn primary" onclick="editFG()">+ Add finished goods</button>`);
+  const fg=DB.finishedGoods||[], sales=DB.fgSales||[];
+  const q=(FG_FILTER.q||"").trim().toLowerCase();
+  const match=f=>{ if(!q) return true; const po=poByNumber(f.poId); return ((po?po.poNumber:"")+" "+(f.style||"")+" "+(f.color||"")+" "+(f.size||"")+" "+(po?po.garment:"")).toLowerCase().includes(q); };
+  const stock=fg.filter(match);
+
+  const totBal=fg.reduce((a,f)=>a+fgBalance(f),0);
+  const totVal=fg.reduce((a,f)=>a+fgValue(f),0);
+  const totSold=sales.reduce((a,s)=>a+Number(s.qty||0),0);
+  const totRev=sales.reduce((a,s)=>a+fgSaleTotal(s),0);
+
+  const stockRows=stock.length?stock.sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(f=>{
+    const bal=fgBalance(f), po=poByNumber(f.poId);
+    return `<tr>
+      <td class="num">${fmtDate(f.date)}</td>
+      <td>${po?`<span class="linklike" onclick="openPO('${f.poId}')">${esc(po.poNumber)}</span>`:"—"}</td>
+      <td>${esc(f.style||(po?po.style:"")||"—")}</td>
+      <td>${esc(f.color||"—")}</td>
+      <td>${esc(f.size||"—")}</td>
+      <td class="num">${num(f.qty)}</td>
+      <td class="num">${num(fgSoldQty(f.id))}</td>
+      <td class="num strong" style="color:${bal<=0?'var(--ink-faint)':'inherit'}">${num(bal)}</td>
+      <td class="num">${money(f.unitCost,"USD")}</td>
+      <td class="num">${money(fgValue(f),"USD")}</td>
+      <td class="num">
+        <button class="btn sm ${bal>0?'primary':''}" ${bal>0?'':'disabled'} onclick="sellFG('${f.id}')">Sell</button>
+        <button class="btn sm" onclick="editFG('${f.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delFG('${f.id}')">Delete</button>`:""}</td></tr>`;
+  }).join("") : `<tr><td colspan="11" class="muted" style="text-align:center;padding:26px">${q?"No finished goods match your search.":"No finished-goods stock yet. Add excess pieces cut over the PO qty."}</td></tr>`;
+
+  const saleRows=sales.length?sales.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(s=>{
+    const f=fg.find(x=>x.id===s.fgId);
+    return `<tr>
+      <td class="num">${fmtDate(s.date)}</td>
+      <td>${esc(f?fgLabel(f):(s.itemLabel||"—"))}</td>
+      <td>${esc(s.customer||"—")}</td>
+      <td class="num">${num(s.qty)}</td>
+      <td class="num">${money(s.unitPrice,"USD")}</td>
+      <td class="num strong">${money(fgSaleTotal(s),"USD")}</td>
+      <td class="num">${canDelete()?`<button class="btn sm danger" onclick="delFGSale('${s.id}')">Delete</button>`:""}</td></tr>`;
+  }).join("") : `<tr><td colspan="7" class="muted" style="text-align:center;padding:22px">No sales recorded yet.</td></tr>`;
+
+  $("#view").innerHTML=`
+    <div class="kpis">
+      <div class="kpi"><div class="klab">Finished goods in stock</div><div class="kval">${num(totBal)}</div><div class="ksub">pieces available to sell</div></div>
+      <div class="kpi k-thread"><div class="klab">Stock value</div><div class="kval" style="font-size:22px">${money(totVal)}</div><div class="ksub">balance × unit cost</div></div>
+      <div class="kpi k-chalk"><div class="klab">Total sold</div><div class="kval">${num(totSold)}</div><div class="ksub">pieces · ${sales.length} sale${sales.length===1?"":"s"}</div></div>
+      <div class="kpi k-green"><div class="klab">Sales revenue</div><div class="kval" style="font-size:22px">${money(totRev)}</div><div class="ksub">qty × sale price</div></div>
+    </div>
+    <div class="toolbar">
+      <input id="fgSearch" placeholder="Search PO, style or colour…" value="${esc(FG_FILTER.q)}" style="flex:1;min-width:160px;max-width:340px">
+      ${q?`<button class="btn sm" id="fgSearchClear">Clear</button>`:""}
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Finished-goods stock</h3><div class="meta">${stock.length} item${stock.length===1?"":"s"}${q?" · matching “"+esc(FG_FILTER.q)+"”":""}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th class="num">Date</th><th>PO</th><th>Style</th><th>Colour</th><th>Size</th><th class="num">Received</th><th class="num">Sold</th><th class="num">Balance</th><th class="num">Unit cost</th><th class="num">Value</th><th></th></tr></thead>
+        <tbody>${stockRows}</tbody></table></div></div>
+    <div class="panel"><div class="panel-head"><h3>Sales log</h3><div class="meta">${sales.length} sale${sales.length===1?"":"s"} · ${money(totRev)} revenue</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th class="num">Date</th><th>Item</th><th>Customer</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Total</th><th></th></tr></thead>
+        <tbody>${saleRows}</tbody></table></div></div>`;
+  const se=$("#fgSearch"); if(se) se.oninput=e=>{ FG_FILTER.q=e.target.value; const v=e.target.value; VIEWS.finished(); const n=$("#fgSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const sc=$("#fgSearchClear"); if(sc) sc.onclick=()=>{ FG_FILTER.q=""; VIEWS.finished(); };
+};
+
+function editFG(id, presetPo){
+  const f=id?(DB.finishedGoods||[]).find(x=>x.id===id):{date:today()};
+  const poOptions=`<option value="">— no PO / standalone —</option>`+DB.pos.map(p=>`<option value="${p.id}" ${(f.poId||presetPo)===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${id?"Edit finished goods":"Add finished goods (excess)"}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="notice" style="margin-top:0">Record extra pieces cut over the PO quantity that are kept as finished-goods stock.</div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Purchase order</span><select id="fg_po">${poOptions}</select></label>
+        <label class="fld"><span class="lab">Date received to stock *</span><input id="fg_date" type="date" value="${f.date||today()}"></label>
+      </div>
+      <div id="fg_poinfo" class="notice" style="display:none;margin-top:0"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Style</span><input id="fg_style" value="${f?esc(f.style||""):""}" placeholder="auto from PO"></label>
+        <label class="fld"><span class="lab">Colour</span><input id="fg_color" value="${f?esc(f.color||""):""}" placeholder="e.g. Rich Black"></label>
+      </div>
+      <div class="row3">
+        <label class="fld"><span class="lab">Size</span><input id="fg_size" value="${f?esc(f.size||""):""}" placeholder="e.g. M (optional)"></label>
+        <label class="fld"><span class="lab">Quantity (pcs) *</span><input id="fg_qty" type="number" min="0" value="${f&&f.qty!=null?f.qty:""}" placeholder="excess pieces"></label>
+        <label class="fld"><span class="lab">Unit cost (USD)</span><input id="fg_cost" type="number" step="0.001" min="0" value="${f&&f.unitCost!=null?f.unitCost:""}" placeholder="cost / pc"></label>
+      </div>
+      <label class="fld"><span class="lab">Remark</span><input id="fg_remark" value="${f?esc(f.remark||""):""}" placeholder="optional note"></label>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="fg_save">${id?"Save":"Add to stock"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const poSel=$("#fg_po"), styleInp=$("#fg_style"), info=$("#fg_poinfo");
+  function refreshPO(){
+    const po=poByNumber(poSel.value);
+    if(po){ if(!styleInp.value) styleInp.value=po.style||"";
+      const shipped=shippedQty(po.id); const fgForPo=(DB.finishedGoods||[]).filter(x=>x.poId===po.id).reduce((a,x)=>a+Number(x.qty||0),0);
+      info.style.display="block";
+      info.innerHTML=`<b>Order qty:</b> ${num(po.quantity)} &nbsp;·&nbsp; <b>Shipped:</b> ${num(shipped)} &nbsp;·&nbsp; <b>Already in FG stock:</b> ${num(fgForPo)} pcs`;
+    } else info.style.display="none";
+  }
+  poSel.onchange=refreshPO; refreshPO();
+  $("#fg_save").onclick=async()=>{
+    const poId=poSel.value, date=$("#fg_date").value, qty=Number($("#fg_qty").value||0);
+    if(!date){ toast("Date is required","warn"); return; }
+    if(qty<=0){ toast("Enter the quantity","warn"); return; }
+    const po=poByNumber(poId);
+    const rec={poId, date, style:$("#fg_style").value.trim()||(po?po.style:""), color:$("#fg_color").value.trim(),
+      size:$("#fg_size").value.trim(), qty, unitCost:Number($("#fg_cost").value||0), remark:$("#fg_remark").value.trim()};
+    if(id){ const cur=DB.finishedGoods.find(x=>x.id===id); if(fgSoldQty(id)>qty){ toast("Quantity can't be less than already sold ("+num(fgSoldQty(id))+")","warn"); return; } Object.assign(cur,rec); }
+    else { DB.finishedGoods.push({id:uid("fg"),...rec,by:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
+    logAct(id?"Edited finished goods":"Added finished goods","Finished Goods", (po?po.poNumber+" · ":"")+(rec.style||"")+" "+(rec.color||"")+" · "+num(qty)+" pcs");
+    await save(); closeModal(); VIEWS.finished(); toast(id?"Updated":"Added to finished-goods stock","ok");
+  };
+}
+
+function sellFG(fgId){
+  const fg=(DB.finishedGoods||[]).filter(f=>fgBalance(f)>0 || f.id===fgId);
+  if(!fg.length){ toast("No finished goods in stock to sell","warn"); return; }
+  const opts=fg.map(f=>`<option value="${f.id}" ${f.id===fgId?"selected":""}>${esc(fgLabel(f))} — bal ${num(fgBalance(f))}</option>`).join("");
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>Record finished-goods sale</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <label class="fld"><span class="lab">Item *</span><select id="sl_item">${opts}</select></label>
+      <div id="sl_bal" class="notice" style="margin-top:0"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Date *</span><input id="sl_date" type="date" value="${today()}"></label>
+        <label class="fld"><span class="lab">Customer</span><input id="sl_cust" placeholder="buyer / shop name"></label>
+      </div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Quantity *</span><input id="sl_qty" type="number" min="0" placeholder="pieces sold"></label>
+        <label class="fld"><span class="lab">Unit price (USD) *</span><input id="sl_price" type="number" step="0.01" min="0" placeholder="sale price / pc"></label>
+      </div>
+      <div class="panel-pad" style="background:var(--surface-2);border-radius:10px;display:flex;justify-content:space-between;align-items:center">
+        <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.08em">Sale total (auto)</span>
+        <span id="sl_total" class="strong" style="font-size:20px;font-variant-numeric:tabular-nums">—</span></div>
+      <label class="fld" style="margin-top:12px"><span class="lab">Remark</span><input id="sl_remark" placeholder="optional"></label>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="sl_save">Record sale</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const itemSel=$("#sl_item"), balBox=$("#sl_bal");
+  function refBal(){ const f=DB.finishedGoods.find(x=>x.id===itemSel.value); balBox.innerHTML=f?`<b>Available balance:</b> ${num(fgBalance(f))} pcs`:""; recalc(); }
+  function recalc(){ const q=Number($("#sl_qty").value||0), pr=Number($("#sl_price").value||0); $("#sl_total").textContent=money(q*pr,"USD"); }
+  itemSel.onchange=refBal; $("#sl_qty").oninput=recalc; $("#sl_price").oninput=recalc; refBal();
+  $("#sl_save").onclick=async()=>{
+    const f=DB.finishedGoods.find(x=>x.id===itemSel.value); if(!f){ toast("Select an item","warn"); return; }
+    const date=$("#sl_date").value, qty=Number($("#sl_qty").value||0), price=Number($("#sl_price").value||0);
+    if(!date||qty<=0){ toast("Enter date and quantity","warn"); return; }
+    if(qty>fgBalance(f)){ toast("Only "+num(fgBalance(f))+" pcs in stock","warn"); return; }
+    DB.fgSales.push({id:uid("fgs"),fgId:f.id,itemLabel:fgLabel(f),date,customer:$("#sl_cust").value.trim(),qty,unitPrice:price,remark:$("#sl_remark").value.trim(),by:CURRENT?CURRENT.username:"",createdAt:Date.now()});
+    logAct("Finished-goods sale","Finished Goods", fgLabel(f)+" · "+num(qty)+" pcs · "+money(qty*price,"USD"));
+    await save(); closeModal(); VIEWS.finished(); toast("Sale recorded","ok");
+  };
+}
+function delFG(id){
+  const f=(DB.finishedGoods||[]).find(x=>x.id===id); if(!f) return;
+  if(fgSoldQty(id)>0){ toast("This item has sales — delete the sales first","warn"); return; }
+  confirmModal("Delete finished goods","Moves to the Recycle Bin (kept 30 days).",async()=>{
+    await softDeleteFG(id); closeModal(); VIEWS.finished(); toast("Moved to Recycle Bin","ok");
+  });
+}
+function delFGSale(id){
+  confirmModal("Delete sale","Moves to the Recycle Bin — the quantity returns to stock.",async()=>{
+    await softDeleteFGSale(id); closeModal(); VIEWS.finished(); toast("Sale removed — stock restored","ok");
+  });
+}
+function exportFinished(){
+  if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
+  const wb=XLSX.utils.book_new();
+  const stock=(DB.finishedGoods||[]).map(f=>{ const po=poByNumber(f.poId); return {
+    Date:f.date||"", PO:po?po.poNumber:"", Style:f.style||"", Colour:f.color||"", Size:f.size||"",
+    Received:Number(f.qty||0), Sold:fgSoldQty(f.id), Balance:fgBalance(f), "Unit cost":Number(f.unitCost||0), Value:fgValue(f), Remark:f.remark||"" };});
+  const sales=(DB.fgSales||[]).map(s=>{ const f=(DB.finishedGoods||[]).find(x=>x.id===s.fgId); return {
+    Date:s.date||"", Item:f?fgLabel(f):(s.itemLabel||""), Customer:s.customer||"", Qty:Number(s.qty||0), "Unit price":Number(s.unitPrice||0), Total:fgSaleTotal(s), Remark:s.remark||"" };});
+  if(!stock.length && !sales.length){ toast("Nothing to export","warn"); return; }
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(stock.length?stock:[{}]),"FG Stock");
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(sales.length?sales:[{}]),"FG Sales");
+  XLSX.writeFile(wb,"Seam_FinishedGoods_"+today()+".xlsx");
+  toast("Exported finished goods","ok");
+}
+
+/* ============================================================
    RECYCLE BIN VIEW  (admin)
    ============================================================ */
 VIEWS.trash=function(){
@@ -2197,7 +2428,7 @@ function clearAllData(){
   if(!isAdmin()) return;
   confirmModal("Clear all data","Delete every order, buyer, supplier, inventory item, production entry, shipment and cheque, leaving an empty workspace? User accounts and production lines are kept. This cannot be undone.",async()=>{
     DB.buyers=[]; DB.suppliers=[]; DB.pos=[]; DB.bom=[]; DB.shipments=[];
-    DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[]; DB.subcontract=[]; DB.subCut={};
+    DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[]; DB.subcontract=[]; DB.subCut={}; DB.finishedGoods=[]; DB.fgSales=[];
     await save(); closeModal(); go("dashboard"); toast("All data cleared — workspace is empty","ok");
   });
 }
