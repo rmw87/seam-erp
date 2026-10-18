@@ -1350,7 +1350,26 @@ function openPO(id){
       <div class="panel-pad" style="border-top:1px solid var(--line-soft)">
         ${canDelete()?`<button class="btn danger sm" onclick="delPO('${p.id}')">Delete this purchase order</button>`:`<span class="muted" style="font-size:12px">Deletion is limited to administrators.</span>`}</div>
     </div>
-  </div>`;
+  </div>
+  ${poProductionEntriesHTML(p)}`;
+}
+/* all factory + sub-contract production logged against this PO — makes the PO sheet a full record */
+function poProductionEntriesHTML(p){
+  const fac=(DB.daily||[]).filter(e=>e.poId===p.id).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  const sub=(DB.subcontract||[]).filter(e=>e.poId===p.id).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  if(!fac.length && !sub.length) return "";
+  const facQty=fac.reduce((a,e)=>a+Number(e.qty||0),0), subQty=sub.reduce((a,e)=>a+Number(e.qty||0),0);
+  const facInc=fac.reduce((a,e)=>a+dailyIncome(e),0), subInc=sub.reduce((a,e)=>a+subIncome(e),0);
+  const totOut=facQty+subQty, bal=Number(p.quantity||0)-totOut;
+  const facRows=fac.map(e=>`<tr><td class="num">${fmtDate(e.date)}</td><td><span class="tag">Factory</span> ${esc(lineName(e.lineId))}</td><td class="num strong">${num(e.qty)}</td><td class="num">${cmMoney(e.cmPrice,e.currency)}</td><td class="num">${cmMoney(dailyIncome(e),e.currency)}</td></tr>`).join("");
+  const subRows=sub.map(e=>`<tr><td class="num">${fmtDate(e.date)}</td><td><span class="tag">Sub</span> ${esc(subName(e.subId))}</td><td class="num strong">${num(e.qty)}</td><td class="num">${cmMoney(subNetCM(e),e.currency)}</td><td class="num">${cmMoney(subIncome(e),e.currency)}</td></tr>`).join("");
+  return `<div class="panel"><div class="panel-head"><h3>Production entries for this PO</h3>
+    <div class="meta">factory ${num(facQty)} · sub-contract ${num(subQty)} · total ${num(totOut)} / ${num(p.quantity)}${bal>0?" · balance "+num(bal):(bal<0?" · over by "+num(-bal):" · complete")}</div></div>
+    <div class="panel-body" style="overflow-x:auto"><table>
+      <thead><tr><th class="num">Date</th><th>Source</th><th class="num">Qty</th><th class="num">CM / Net CM</th><th class="num">Income</th></tr></thead>
+      <tbody>${facRows}${subRows}
+        <tr style="border-top:2px solid var(--line)"><td class="strong">Total</td><td class="muted">${fac.length} factory · ${sub.length} sub entries</td><td class="num strong">${num(totOut)}</td><td></td><td class="num strong">${cmMoney(facInc+subInc)}</td></tr>
+      </tbody></table></div></div>`;
 }
 function detailLine(k,v){ return `<div class="stat-line"><span class="muted">${esc(k)}</span><span class="strong">${esc(v||"—")}</span></div>`; }
 function poPriceBreakdownHTML(p){
@@ -1492,9 +1511,16 @@ async function setMatStatus(id,val){
 /* ---------- PRODUCTION ---------- */
 VIEWS.production=function(){
   setHead("Operations","Production Stages");
-  const active=DB.pos.filter(p=>!["Draft","Completed"].includes(p.status));
+  let active=DB.pos.filter(p=>!["Draft","Completed"].includes(p.status));
   if(!active.length){ return emptyState("Nothing in production","Confirm a purchase order to start tracking its production stages.","go('pos')","Open orders"); }
-  $("#view").innerHTML = active.map(p=>{
+  const pq=(PROD_SEARCH||"").trim().toLowerCase();
+  if(pq) active=active.filter(p=>((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+buyerName(p.buyerId)).toLowerCase().includes(pq));
+  const searchBar=`<div class="toolbar">
+      <input id="prodSearch" placeholder="Search PO or style…" value="${esc(PROD_SEARCH)}" style="flex:1;min-width:150px;max-width:320px">
+      ${pq?`<button class="btn sm" id="prodSearchClear">Clear</button>`:""}
+      <span class="muted" style="font-size:12.5px;margin-left:auto">${active.length} order${active.length===1?"":"s"} in production${pq?" · matching “"+esc(PROD_SEARCH)+"”":""}</span>
+    </div>`;
+  const cards = active.length ? active.map(p=>{
     const pp=productionProgress(p); const target=Number(p.quantity||0);
     const cells=STAGES.map(s=>{
       const q=Number(p.production?.[s]||0);
@@ -1515,8 +1541,12 @@ VIEWS.production=function(){
         <button class="btn sm" onclick="fillStages('${p.id}')">Set all stages to ${num(target)}</button>
       </div>
     </div>`;
-  }).join("");
+  }).join("") : `<div class="panel"><div class="empty"><div class="big">No orders match “${esc(PROD_SEARCH)}”</div><div style="margin-bottom:16px">Try a different PO number or style.</div></div></div>`;
+  $("#view").innerHTML = searchBar + cards;
+  const pse=$("#prodSearch"); if(pse) pse.oninput=e=>{ PROD_SEARCH=e.target.value; const v=e.target.value; VIEWS.production(); const n=$("#prodSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const psc=$("#prodSearchClear"); if(psc) psc.onclick=()=>{ PROD_SEARCH=""; VIEWS.production(); };
 };
+let PROD_SEARCH="";
 async function setStage(poId,stage,val){
   const p=DB.pos.find(x=>x.id===poId); if(!p) return;
   if(!p.production) p.production={};
@@ -1635,11 +1665,16 @@ VIEWS.daily=function(){
 
   // filters
   DAILY_FILTER.month = DAILY_FILTER.month || thisMonth();
+  const dq=(DAILY_FILTER.q||"").trim().toLowerCase();
   const months = Array.from(new Set(DB.daily.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
   if(!months.includes(DAILY_FILTER.month)) months.unshift(DAILY_FILTER.month);
   let rows = DB.daily.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
-  rows = rows.filter(e=> monthKey(e.date)===DAILY_FILTER.month);
   if(DAILY_FILTER.line!=="All") rows=rows.filter(e=>e.lineId===DAILY_FILTER.line);
+  if(dq){   // PO/style search runs across all months
+    rows=rows.filter(e=>{ const po=poByNumber(e.poId); const hay=((po?po.poNumber:"")+" "+(e.style||(po?po.style:"")||"")+" "+(po?po.garment:"")).toLowerCase(); return hay.includes(dq); });
+  } else {
+    rows = rows.filter(e=> monthKey(e.date)===DAILY_FILTER.month);
+  }
 
   // KPIs
   const allMonth = DB.daily.filter(e=>monthKey(e.date)===DAILY_FILTER.month);
@@ -1679,10 +1714,12 @@ VIEWS.daily=function(){
       <div class="kpi k-thread"><div class="klab">Entries</div><div class="kval">${allMonth.length}</div><div class="ksub">this month</div></div>
     </div>
     <div class="toolbar">
-      <select id="dmonth" style="max-width:150px">${months.map(m=>`<option ${m===DAILY_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <select id="dmonth" style="max-width:150px" ${dq?"disabled title='Clear search to use month'":""}>${months.map(m=>`<option ${m===DAILY_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
       <div class="filterpills">${lineTabs}</div>
+      <input id="dSearch" placeholder="Search PO or style…" value="${esc(DAILY_FILTER.q)}" style="flex:1;min-width:140px;max-width:280px">
+      ${dq?`<button class="btn sm" id="dSearchClear">Clear</button>`:""}
     </div>
-    <div class="panel"><div class="panel-head"><h3>Production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}${dq?" · matching “"+esc(DAILY_FILTER.q)+"”":""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
@@ -1692,8 +1729,10 @@ VIEWS.daily=function(){
       </div></div>`;
   $("#dmonth").onchange=e=>{ DAILY_FILTER.month=e.target.value; VIEWS.daily(); };
   $$(".fp").forEach(f=> f.onclick=()=>{ DAILY_FILTER.line=f.dataset.l; VIEWS.daily(); });
+  const dse=$("#dSearch"); if(dse) dse.oninput=e=>{ DAILY_FILTER.q=e.target.value; const v=e.target.value; VIEWS.daily(); const n=$("#dSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const dsc=$("#dSearchClear"); if(dsc) dsc.onclick=()=>{ DAILY_FILTER.q=""; VIEWS.daily(); };
 };
-const DAILY_FILTER={month:"",line:"All"};
+const DAILY_FILTER={month:"",line:"All",q:""};
 
 function editDaily(id){
   const e = id?DB.daily.find(x=>x.id===id):null;
@@ -1800,7 +1839,7 @@ function subNetCM(e){ return Number(e.cmPrice||0)+Number(e.costAdj||0)-Number(e.
 function subIncome(e){ return subNetCM(e)*Number(e.qty||0); }
 function subTotalOut(poId,exceptId){ return DB.subcontract.filter(d=>d.poId===poId && d.id!==exceptId).reduce((a,d)=>a+Number(d.qty||0),0); }
 function subCutQty(poId){ return Number((DB.subCut||{})[poId]||0); }
-const SUB_FILTER={month:"",sub:"All",from:"",to:""};
+const SUB_FILTER={month:"",sub:"All",from:"",to:"",q:""};
 function subInRange(e){
   if(SUB_FILTER.from && (e.date||"")<SUB_FILTER.from) return false;
   if(SUB_FILTER.to && (e.date||"")>SUB_FILTER.to) return false;
@@ -1822,7 +1861,13 @@ VIEWS.subcontract=function(){
   let base = DB.subcontract.slice();
   if(SUB_FILTER.sub!=="All") base=base.filter(e=>e.subId===SUB_FILTER.sub);
   const allMonth = rangeActive ? base.filter(subInRange) : base.filter(e=>monthKey(e.date)===SUB_FILTER.month);
-  let rows = allMonth.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
+  const sq=(SUB_FILTER.q||"").trim().toLowerCase();
+  let rows;
+  if(sq){   // PO/style search runs across all periods (sub-factory filter still applies)
+    rows=base.filter(e=>{ const po=poByNumber(e.poId); const hay=((po?po.poNumber:"")+" "+(e.style||(po?po.style:"")||"")+" "+(po?po.garment:"")).toLowerCase(); return hay.includes(sq); }).sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+  } else {
+    rows = allMonth.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
+  }
 
   const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
   const monthInc = allMonth.reduce((a,e)=>a+subIncome(e),0);
@@ -1878,12 +1923,14 @@ VIEWS.subcontract=function(){
     </div>
     <div class="toolbar" style="margin-top:-6px">
       <span class="muted" style="font-size:12.5px">Date range:</span>
-      <input id="sFrom" type="date" value="${SUB_FILTER.from||""}" style="max-width:160px">
+      <input id="sFrom" type="date" value="${SUB_FILTER.from||""}" style="max-width:160px" ${sq?"disabled":""}>
       <span class="muted">→</span>
-      <input id="sTo" type="date" value="${SUB_FILTER.to||""}" style="max-width:160px">
+      <input id="sTo" type="date" value="${SUB_FILTER.to||""}" style="max-width:160px" ${sq?"disabled":""}>
       ${rangeActive?`<button class="btn sm" id="sDateClear">Clear dates</button>`:""}
+      <input id="sSearch" placeholder="Search PO or style…" value="${esc(SUB_FILTER.q||"")}" style="flex:1;min-width:140px;max-width:260px">
+      ${sq?`<button class="btn sm" id="sSearchClear">Clear</button>`:""}
     </div>
-    <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"} · ${periodLabel}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"} · ${sq?"matching “"+esc(SUB_FILTER.q)+"”":periodLabel}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th class="num">Date</th><th>Sub-factory</th><th>PO</th><th>Style</th><th class="num">Daily out</th><th class="num">CM price</th><th class="num">Cost adj</th><th class="num">Sub charges</th><th class="num">Net CM</th><th class="num">Income</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
@@ -1899,6 +1946,8 @@ VIEWS.subcontract=function(){
   $("#sFrom").onchange=e=>{ SUB_FILTER.from=e.target.value; VIEWS.subcontract(); };
   $("#sTo").onchange=e=>{ SUB_FILTER.to=e.target.value; VIEWS.subcontract(); };
   const sdc=$("#sDateClear"); if(sdc) sdc.onclick=()=>{ SUB_FILTER.from=""; SUB_FILTER.to=""; VIEWS.subcontract(); };
+  const sse=$("#sSearch"); if(sse) sse.oninput=e=>{ SUB_FILTER.q=e.target.value; const v=e.target.value; VIEWS.subcontract(); const n=$("#sSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const ssc=$("#sSearchClear"); if(ssc) ssc.onclick=()=>{ SUB_FILTER.q=""; VIEWS.subcontract(); };
   $$(".fp").forEach(f=> f.onclick=()=>{ SUB_FILTER.sub=f.dataset.s; VIEWS.subcontract(); });
 };
 
