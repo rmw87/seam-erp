@@ -1209,14 +1209,17 @@ VIEWS.pos=function(){
   if(!DB.buyers.length){ return emptyState("Add a buyer first","Purchase orders are placed by buyers — create one to begin.","go('buyers')","Go to buyers"); }
   const tabs=["All"].concat(PO_STATUS);
   const q=(PO_SEARCH||"").trim().toLowerCase();
+  const dFrom=PO_DFILTER.from, dTo=PO_DFILTER.to, dateActive=!!(dFrom||dTo);
   const filtered = DB.pos.filter(p=>{
     if(FILTERS.po!=="All" && p.status!==FILTERS.po) return false;
     if(q){
       const hay=((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+(p.colors||"")+" "+buyerName(p.buyerId)).toLowerCase();
       if(!hay.includes(q)) return false;
     }
+    if(dFrom && !((p.deliveryDate||"")>=dFrom)) return false;   // filter by delivery date range
+    if(dTo && !((p.deliveryDate||"")<=dTo)) return false;
     return true;
-  });
+  }).sort((a,b)=> dateActive ? (a.deliveryDate||"").localeCompare(b.deliveryDate||"") : 0);
   const rows = filtered.length?filtered.map(p=>{
     const mp=materialProgress(p.id), pp=productionProgress(p);
     return `<tr class="clk" data-po="${p.id}">
@@ -1236,16 +1239,27 @@ VIEWS.pos=function(){
       <input id="poSearch" placeholder="Search PO number or style…" value="${esc(PO_SEARCH)}" style="flex:1;min-width:150px;max-width:320px">
       ${q?`<button class="btn sm" id="poSearchClear">Clear</button>`:""}
     </div>
-    <div class="panel"><div class="panel-head"><h3>Purchase orders</h3><div class="meta">${filtered.length} order${filtered.length===1?"":"s"}${q?" · matching “"+esc(PO_SEARCH)+"”":""}</div></div>
+    <div class="toolbar" style="margin-top:-6px">
+      <span class="muted" style="font-size:12.5px">Delivery date:</span>
+      <input id="poDFrom" type="date" value="${dFrom||""}" style="max-width:160px">
+      <span class="muted">→</span>
+      <input id="poDTo" type="date" value="${dTo||""}" style="max-width:160px">
+      ${dateActive?`<button class="btn sm" id="poDateClear">Clear dates</button>`:""}
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Purchase orders</h3><div class="meta">${filtered.length} order${filtered.length===1?"":"s"}${q?" · matching “"+esc(PO_SEARCH)+"”":""}${dateActive?" · delivery "+(dFrom?fmtDate(dFrom):"…")+" → "+(dTo?fmtDate(dTo):"…"):""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
       <thead><tr><th>PO / Style</th><th>Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.po=f.dataset.f; VIEWS.pos(); });
   const se=$("#poSearch"); if(se) se.oninput=e=>{ PO_SEARCH=e.target.value; const v=e.target.value; VIEWS.pos(); const n=$("#poSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const sc=$("#poSearchClear"); if(sc) sc.onclick=()=>{ PO_SEARCH=""; VIEWS.pos(); };
+  const df=$("#poDFrom"); if(df) df.onchange=e=>{ PO_DFILTER.from=e.target.value; VIEWS.pos(); };
+  const dt=$("#poDTo"); if(dt) dt.onchange=e=>{ PO_DFILTER.to=e.target.value; VIEWS.pos(); };
+  const dcl=$("#poDateClear"); if(dcl) dcl.onclick=()=>{ PO_DFILTER.from=""; PO_DFILTER.to=""; VIEWS.pos(); };
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
 };
 let PO_SEARCH="";
+const PO_DFILTER={from:"",to:""};
 function poFields(){
   return [
     {name:"poNumber",label:"PO number",required:true,half:true,placeholder:"PO-2406-XX"},
