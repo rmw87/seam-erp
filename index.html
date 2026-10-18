@@ -3500,12 +3500,14 @@ function fmtTs(ts){ try{ return new Date(ts).toLocaleString(); }catch(e){ return
 
 VIEWS.superadmin=function(){
   if(!isSuperAdmin()){ go("dashboard"); return; }
-  setHead("Super Admin", SUPER_TAB.tab==="log"?"Activity Log":(SUPER_TAB.tab==="users"?"User Management":"Roles & Access"),"");
-  const pills=[["log","Activity log"],["users","Users"],["roles","Roles & access"]]
+  const titles={log:"Activity Log",users:"User Management",roles:"Roles & Access",db:"Database Usage"};
+  setHead("Super Admin", titles[SUPER_TAB.tab]||"Super Admin","");
+  const pills=[["log","Activity log"],["users","Users"],["roles","Roles & access"],["db","Database"]]
     .map(([k,l])=>`<div class="fp ${SUPER_TAB.tab===k?"on":""}" data-st="${k}">${l}</div>`).join("");
   let bodyHTML="";
   if(SUPER_TAB.tab==="log") bodyHTML=superLogHTML();
   else if(SUPER_TAB.tab==="users") bodyHTML=superUsersHTML();
+  else if(SUPER_TAB.tab==="db") bodyHTML=superDbHTML();
   else bodyHTML=superRolesHTML();
   $("#view").innerHTML=`<div class="toolbar"><div class="filterpills">${pills}</div></div>${bodyHTML}`;
   $$(".fp[data-st]").forEach(f=>f.onclick=()=>{ SUPER_TAB.tab=f.dataset.st; VIEWS.superadmin(); });
@@ -3701,6 +3703,48 @@ function delRole(key){
     logAct("Deleted role","Super Admin", key);
     await save(); closeModal(); VIEWS.superadmin(); toast("Role deleted","ok");
   });
+}
+/* ---- Database usage (super admin) ---- */
+const DB_DOC_LIMIT=1048576;   // Firestore hard cap: 1 MiB per document (the whole app lives in one doc)
+function byteLen(str){ try{ return new TextEncoder().encode(str).length; }catch(e){ return (str||"").length; } }
+function fmtBytes(b){ b=Number(b||0); if(b<1024) return b+" B"; if(b<1048576) return (b/1024).toFixed(1)+" KB"; return (b/1048576).toFixed(2)+" MB"; }
+function superDbHTML(){
+  let total=0; const parts=[];
+  const label={pos:"Purchase orders",bom:"Bill of materials",buyers:"Buyers",suppliers:"Suppliers",inventory:"Inventory",issues:"Fabric issues",daily:"Daily production",subcontract:"Sub-contract",shipments:"Shipments",cheques:"Cheques",users:"Users",activity:"Activity log",trash:"Recycle bin",lines:"Production lines",subfactories:"Sub-factories",roles:"Roles",roleTabs:"Role tabs",subCut:"Cut quantities",settings:"Settings",chequeLayout:"Cheque layout"};
+  Object.keys(DB||{}).forEach(k=>{
+    const sz=byteLen(JSON.stringify(DB[k])); total+=sz;
+    const count=Array.isArray(DB[k])?DB[k].length:(DB[k]&&typeof DB[k]==="object"?Object.keys(DB[k]).length:1);
+    parts.push({k,sz,count});
+  });
+  parts.sort((a,b)=>b.sz-a.sz);
+  const pct=Math.min(100, total/DB_DOC_LIMIT*100);
+  const barColor = pct>=90?"#c0392b" : pct>=70?"#d98c1f" : "var(--accent,#2e7d6b)";
+  const warn = pct>=90
+    ? `<div class="notice" style="background:#fdecea;border-color:#e7c4c0"><b>⚠ Nearly full (${pct.toFixed(0)}%).</b> The whole app lives in one Firestore document, capped at 1 MB. Ask to split the data into separate collections so it can grow to the full 1 GB free tier.</div>`
+    : pct>=70
+    ? `<div class="notice" style="background:#fff6e8;border-color:#f0d9a8"><b>${pct.toFixed(0)}% used.</b> Still fine. When this passes ~90%, the data should be split into separate collections.</div>`
+    : `<div class="notice"><b>Plenty of room.</b> Free Firestore gives 1 GB total, but this app keeps everything in one document (1 MB cap), so 1 MB is the practical limit. Far more than a two-line factory needs for years.</div>`;
+  const rows=parts.filter(p=>p.sz>0).map(p=>`<tr>
+      <td class="strong">${esc(label[p.k]||p.k)}</td>
+      <td class="num">${num(p.count)}</td>
+      <td class="num">${fmtBytes(p.sz)}</td>
+      <td class="num">${(p.sz/total*100).toFixed(1)}%</td></tr>`).join("");
+  return `${warn}
+    <div class="panel"><div class="panel-head"><h3>Database usage</h3><div class="meta">Firestore · 1 MB per-document free limit</div></div>
+      <div class="panel-pad">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+          <span class="strong" style="font-size:19px">${fmtBytes(total)} <span class="muted" style="font-size:13px">/ 1 MB</span></span>
+          <span class="strong" style="font-size:19px;color:${barColor}">${pct.toFixed(1)}%</span></div>
+        <div style="height:12px;border-radius:7px;background:var(--surface-2);overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${barColor};transition:width .3s"></div></div>
+        <div class="muted" style="font-size:12px;margin-top:6px">${fmtBytes(DB_DOC_LIMIT-total)} free</div>
+      </div></div>
+    <div class="panel"><div class="panel-head"><h3>Breakdown by section</h3><div class="meta">what is taking up space</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>Section</th><th class="num">Records</th><th class="num">Size</th><th class="num">Share</th></tr></thead>
+        <tbody>${rows}
+          <tr style="border-top:2px solid var(--line)"><td class="strong">Total</td><td></td><td class="num strong">${fmtBytes(total)}</td><td class="num strong">100%</td></tr>
+        </tbody></table></div></div>`;
 }
 function roleTabsEdit(key){
   const rl=(DB.roles||[]).find(r=>r.key===key); if(!rl) return;
