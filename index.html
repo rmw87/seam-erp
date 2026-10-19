@@ -1006,6 +1006,70 @@ const poOpts = ()=> DB.pos.map(p=>({value:p.id,label:p.poNumber+" · "+p.garment
    ============================================================ */
 const VIEWS = {};
 
+/* ---------- chart + date helpers (inline SVG, no external library) ---------- */
+const CH_FAC="#2B4A7E", CH_SUB="#C9781F", CH_TEAL="#1F8C7E", CH_GREEN="#2A8A56", CH_RED="#BC4338", CH_BLUE="#2B6CB0", CH_GREY="#9AA6B6";
+function niceMax(v){ if(v<=0) return 1; const p=Math.pow(10,Math.floor(Math.log10(v))); const n=v/p; const m=n<=1?1:n<=2?2:n<=5?5:10; return m*p; }
+function lastNMonths(n){ const d=new Date(today()+"T00:00:00"); const out=[]; for(let i=n-1;i>=0;i--){ const x=new Date(d.getFullYear(),d.getMonth()-i,1); out.push(x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")); } return out; }
+function lastNDays(n){ const d=new Date(today()+"T00:00:00"); const out=[]; for(let i=n-1;i>=0;i--){ const x=new Date(d); x.setDate(d.getDate()-i); out.push(x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0")+"-"+String(x.getDate()).padStart(2,"0")); } return out; }
+const MON3=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function monthShort(ym){ const a=ym.split("-"); return MON3[Number(a[1])-1]+" "+a[0].slice(2); }
+function dayShort(iso){ const a=iso.split("-"); return Number(a[2])+"/"+Number(a[1]); }
+/* vertical (optionally grouped) bar chart */
+function svgVBars({labels, series, h=175, fmt}){
+  fmt=fmt||num;
+  const n=labels.length||1, S=series.length;
+  const padL=6,padR=6,padT=16,padB=26, plotH=h-padT-padB;
+  const perGroup=S*20+30, W=Math.max(300, n*perGroup);
+  const maxV=niceMax(Math.max(1,...series.flatMap(s=>s.values.map(Number))));
+  const gW=(W-padL-padR)/n, barW=Math.min(24,(gW-10)/S);
+  let bars="";
+  labels.forEach((lab,i)=>{
+    const gx=padL+i*gW, startX=gx+(gW-(barW*S+2*(S-1)))/2;
+    series.forEach((s,j)=>{
+      const v=Number(s.values[i]||0), bh=maxV?v/maxV*plotH:0;
+      const x=startX+j*(barW+2), y=padT+plotH-bh;
+      bars+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0,bh).toFixed(1)}" rx="3" fill="${s.color}"><title>${esc(s.name)} · ${esc(lab)}: ${esc(fmt(v))}</title></rect>`;
+      if(v>0 && S<=2 && barW>=12) bars+=`<text x="${(x+barW/2).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="middle" font-size="9" fill="#5C6779">${esc(fmt(v))}</text>`;
+    });
+    bars+=`<text x="${(gx+gW/2).toFixed(1)}" y="${(h-9).toFixed(1)}" text-anchor="middle" font-size="10" fill="#8A93A3">${esc(lab)}</text>`;
+  });
+  const axis=`<line x1="${padL}" y1="${(padT+plotH).toFixed(1)}" x2="${W-padR}" y2="${(padT+plotH).toFixed(1)}" stroke="#DCE2EA"/>`;
+  const legend=S>1?`<div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:12px">${series.map(s=>`<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:11px;height:11px;border-radius:3px;background:${s.color}"></span>${esc(s.name)}</span>`).join("")}</div>`:"";
+  return `<svg viewBox="0 0 ${W} ${h}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;max-height:${h}px">${axis}${bars}</svg>${legend}`;
+}
+/* horizontal bars (HTML, responsive) */
+function hBars({rows, color, fmt}){
+  fmt=fmt||num;
+  const maxV=Math.max(1,...rows.map(r=>Number(r.value||0)));
+  if(!rows.some(r=>Number(r.value||0)>0)) return `<div class="muted" style="font-size:13px;padding:6px 0">No data yet.</div>`;
+  return `<div style="display:flex;flex-direction:column;gap:9px">${rows.map(r=>{
+    const pct=Math.max(0,Number(r.value||0))/maxV*100;
+    return `<div style="display:flex;align-items:center;gap:10px" title="${esc(r.label)}: ${esc(fmt(r.value))}">
+      <div style="width:36%;font-size:12.5px;color:#5C6779;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.label)}</div>
+      <div style="flex:1;background:var(--surface-2);border-radius:6px;height:22px;position:relative">
+        <div style="position:absolute;left:0;top:0;bottom:0;width:${pct.toFixed(1)}%;min-width:${Number(r.value||0)>0?2:0}px;background:${r.color||color};border-radius:6px"></div>
+        <span style="position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11.5px;font-weight:600">${esc(fmt(r.value))}</span>
+      </div></div>`;
+  }).join("")}</div>`;
+}
+/* donut chart */
+function svgDonut({segments, size=140, centerLabel}){
+  const total=segments.reduce((a,s)=>a+Number(s.value||0),0);
+  const r=size/2-9, cx=size/2, cy=size/2, C=2*Math.PI*r; let off=0;
+  const rings=total? segments.filter(s=>Number(s.value||0)>0).map(s=>{
+    const len=Number(s.value)/total*C;
+    const el=`<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="15" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}" stroke-dashoffset="${(-off).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${esc(s.label)}: ${s.value}</title></circle>`;
+    off+=len; return el;
+  }).join("") : `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#E9EDF2" stroke-width="15"/>`;
+  return `<div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+    <svg viewBox="0 0 ${size} ${size}" width="128" height="128" style="flex:none">${rings}
+      <text x="${cx}" y="${cy-1}" text-anchor="middle" font-size="22" font-weight="700" fill="#15213B">${total}</text>
+      <text x="${cx}" y="${cy+15}" text-anchor="middle" font-size="9.5" fill="#8A93A3">${esc(centerLabel||"total")}</text></svg>
+    <div style="flex:1;min-width:150px;display:flex;flex-direction:column;gap:6px">${segments.filter(s=>Number(s.value||0)>0).map(s=>`<div style="display:flex;align-items:center;gap:8px;font-size:12.5px"><span style="width:11px;height:11px;border-radius:3px;background:${s.color}"></span><span style="flex:1">${esc(s.label)}</span><span class="strong">${s.value}</span></div>`).join("")||`<div class="muted" style="font-size:13px">No orders yet.</div>`}</div>
+  </div>`;
+}
+function poStatusColor(s){ return ({Draft:CH_GREY,Confirmed:CH_BLUE,"In Production":CH_SUB,"Ready to Ship":CH_TEAL,Shipped:CH_GREEN,Completed:"#5C6779"})[s]||CH_GREY; }
+
 /* ---------- DASHBOARD ---------- */
 VIEWS.dashboard = function(){
   setHead("Overview","Dashboard");
@@ -1077,27 +1141,65 @@ VIEWS.dashboard = function(){
 
   const alerts = buildAlerts();
 
-  $("#view").innerHTML = kpis + `
+  /* ----- performance charts ----- */
+  const months6=lastNMonths(6);
+  const facByM=months6.map(m=>DB.daily.filter(e=>monthKey(e.date)===m).reduce((a,e)=>a+Number(e.qty||0),0));
+  const subByM=months6.map(m=>(DB.subcontract||[]).filter(e=>monthKey(e.date)===m).reduce((a,e)=>a+Number(e.qty||0),0));
+  const cmByM=months6.map(m=>DB.daily.filter(e=>monthKey(e.date)===m).reduce((a,e)=>a+dailyIncome(e),0)+(DB.subcontract||[]).filter(e=>monthKey(e.date)===m).reduce((a,e)=>a+subIncome(e),0));
+  const mLabels=months6.map(monthShort);
+  const days14=lastNDays(14);
+  const dOut=days14.map(d=>DB.daily.filter(e=>e.date===d).reduce((a,e)=>a+Number(e.qty||0),0)+(DB.subcontract||[]).filter(e=>e.date===d).reduce((a,e)=>a+Number(e.qty||0),0));
+  const stageTot={}; STAGES.forEach(s=>stageTot[s]=0);
+  DB.pos.filter(p=>!["Completed"].includes(p.status)).forEach(p=>STAGES.forEach(s=>stageTot[s]+=Number(p.production?.[s]||0)));
+  const stageRows=STAGES.map((s,i)=>({label:s,value:stageTot[s],color:[CH_FAC,CH_BLUE,CH_TEAL,CH_SUB,CH_GREEN][i]||CH_FAC}));
+  const lineRows=(DB.lines||[]).map(l=>({label:l.name,value:DB.daily.filter(e=>e.lineId===l.id&&monthKey(e.date)===thisMonth()).reduce((a,e)=>a+Number(e.qty||0),0),color:CH_FAC}));
+  const statusSeg=PO_STATUS.map(s=>({label:s,value:DB.pos.filter(p=>p.status===s).length,color:poStatusColor(s)}));
+
+  const charts = `
   <div class="grid2">
-    <div class="panel" style="grid-column:1/-1">
-      <div class="panel-head"><h3>Order pipeline</h3><div class="meta">${DB.pos.length} purchase orders</div>
-        <div class="actions"><button class="btn sm" onclick="go('pos')">Open orders</button></div></div>
-      <div class="panel-body"><table>
-        <thead><tr><th>PO / Style</th><th>Buyer</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
-        <tbody>${poRows}</tbody></table></div>
-    </div>
+    <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production trend</h3><div class="meta">factory vs sub-contract · last 6 months</div></div>
+      <div class="panel-pad">${svgVBars({labels:mLabels,series:[{name:"Factory",color:CH_FAC,values:facByM},{name:"Sub-contract",color:CH_SUB,values:subByM}]})}</div></div>
   </div>
+  <div class="grid2">
+    <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Daily output</h3><div class="meta">factory + sub-contract · last 14 days</div></div>
+      <div class="panel-pad">${svgVBars({labels:days14.map(dayShort),series:[{name:"Output",color:CH_TEAL,values:dOut}]})}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="panel"><div class="panel-head"><h3>Production stages</h3><div class="meta">units done · active orders (WIP)</div></div>
+      <div class="panel-pad">${hBars({rows:stageRows})}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Orders by status</h3><div class="meta">${DB.pos.length} purchase orders</div></div>
+      <div class="panel-pad">${svgDonut({segments:statusSeg,centerLabel:"orders"})}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="panel"><div class="panel-head"><h3>Output by line</h3><div class="meta">in-house · ${thisMonth()}</div></div>
+      <div class="panel-pad">${hBars({rows:lineRows.length?lineRows:[{label:"—",value:0}]})}</div></div>
+    <div class="panel"><div class="panel-head"><h3>CM income</h3><div class="meta">factory + sub-contract · last 6 months</div></div>
+      <div class="panel-pad">${svgVBars({labels:mLabels,series:[{name:"CM income",color:CH_GREEN,values:cmByM}],fmt:(v)=>cmMoney(v)})}</div></div>
+  </div>`;
+
+  $("#view").innerHTML = kpis + `
   <div class="grid2">
     <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production summary</h3><div class="meta">factory vs sub-contract · ${thisMonth()}</div>
       <div class="actions"><button class="btn sm" onclick="go('daily')">Daily production</button> <button class="btn sm" onclick="go('subcontract')">Sub contract</button></div></div>
       ${prodSummary}
     </div>
   </div>
+  <div style="margin:4px 0 10px"><div class="eyebrow" style="font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-faint);font-weight:600">Factory performance</div></div>
+  ${charts}
   <div class="grid2">
     <div class="panel"><div class="panel-head"><h3>Needs attention</h3></div>
       <div class="panel-pad">${alerts}</div></div>
     <div class="panel"><div class="panel-head"><h3>Workflow</h3></div>
       <div class="panel-pad">${workflowGuide()}</div></div>
+  </div>
+  <div class="grid2">
+    <div class="panel" style="grid-column:1/-1">
+      <div class="panel-head"><h3>Order pipeline</h3><div class="meta">${DB.pos.length} purchase orders</div>
+        <div class="actions"><button class="btn sm" onclick="go('pos')">Open orders</button></div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>PO / Style</th><th>Buyer</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
+        <tbody>${poRows}</tbody></table></div>
+    </div>
   </div>`;
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
 };
