@@ -249,8 +249,12 @@
   .review-grid .v{font-size:14px; font-weight:600; margin-bottom:4px}
   .matchip{display:inline-flex; gap:6px; align-items:center; font-size:12px; background:var(--surface-2); border:1px solid var(--line); border-radius:7px; padding:4px 9px; margin:0 6px 6px 0}
 
+  .print-only{display:none}
   @media print{
-    .side,.topbar .right,.no-print{display:none !important}
+    .side,.topbar .right,.no-print,.mobilebar,.appfoot{display:none !important}
+    .toolbar{display:none !important}          /* hide filter / search bars */
+    .panel .btn{display:none !important}        /* hide in-table action buttons */
+    .print-only{display:block !important}
     body{display:block; background:#fff}
     .main{overflow:visible}
     .topbar{position:static; background:#fff; border:none; padding:0 0 8px}
@@ -1809,7 +1813,7 @@ function dailyIncome(e){ return Number(e.qty||0)*Number(e.cmPrice||0); }
 VIEWS.daily=function(){
   const admin=isAdmin();
   setHead("Operations","Daily Production",
-    `${admin?`<button class="btn" onclick="manageLines()">Manage lines</button> `:""}<button class="btn primary" onclick="editDaily()">+ Add production</button>`);
+    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> ${admin?`<button class="btn" onclick="manageLines()">Manage lines</button> `:""}<button class="btn primary" onclick="editDaily()">+ Add production</button>`);
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Daily production is logged against an existing PO.","go('pos')","Open orders"); }
 
   // filters
@@ -1856,6 +1860,10 @@ VIEWS.daily=function(){
     DB.lines.map(l=>`<div class="fp ${DAILY_FILTER.line===l.id?"on":""}" data-l="${l.id}">${esc(l.name)}</div>`).join("");
 
   $("#view").innerHTML=`
+    <div class="print-only" style="margin-bottom:12px">
+      <div style="font-size:18px;font-weight:700">Daily Production Report</div>
+      <div style="font-size:12.5px;color:#444">Period: ${dq?"search “"+esc(DAILY_FILTER.q)+"”":DAILY_FILTER.month}${DAILY_FILTER.line!=="All"?" · Line: "+esc(lineName(DAILY_FILTER.line)):" · All lines"} · Printed ${fmtDate(today())}</div>
+    </div>
     <div class="kpis">
       <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
       <div class="kpi k-chalk"><div class="klab">This month output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${DAILY_FILTER.month}</div></div>
@@ -1998,7 +2006,7 @@ function subInRange(e){
 VIEWS.subcontract=function(){
   const admin=isAdmin();
   setHead("Operations","Sub Contract Production",
-    `<button class="btn" onclick="exportSubcontract()">⬆ Export Excel</button> ${admin?`<button class="btn" onclick="manageSubfactories()">Manage sub-factories</button> `:""}<button class="btn primary" onclick="editSub()">+ Add production</button>`);
+    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> <button class="btn" onclick="exportSubcontract()">⬆ Export Excel</button> ${admin?`<button class="btn" onclick="manageSubfactories()">Manage sub-factories</button> `:""}<button class="btn primary" onclick="editSub()">+ Add production</button>`);
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Sub-contract production is logged against an existing PO.","go('pos')","Open orders"); }
 
   SUB_FILTER.month = SUB_FILTER.month || thisMonth();
@@ -2060,6 +2068,10 @@ VIEWS.subcontract=function(){
     DB.subfactories.map(s=>`<div class="fp ${SUB_FILTER.sub===s.id?"on":""}" data-s="${s.id}">${esc(s.name)}</div>`).join("");
 
   $("#view").innerHTML=`
+    <div class="print-only" style="margin-bottom:12px">
+      <div style="font-size:18px;font-weight:700">Sub Contract Production Report</div>
+      <div style="font-size:12.5px;color:#444">Period: ${sq?"search “"+esc(SUB_FILTER.q)+"”":periodLabel}${SUB_FILTER.sub!=="All"?" · Sub-factory: "+esc(subName(SUB_FILTER.sub)):" · All sub-factories"} · Printed ${fmtDate(today())}</div>
+    </div>
     <div class="kpis">
       <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
       <div class="kpi k-chalk"><div class="klab">Output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${periodLabel}</div></div>
