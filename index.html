@@ -727,6 +727,11 @@ function featureTabOn(id){ if(isSuperAdmin()) return true; return (((DB.featureV
 function featureActionOn(key){ if(isSuperAdmin()) return true; return (((DB.featureVis&&DB.featureVis.actions)||{})[key]!==false); }
 function canExport(){ return featureActionOn("export"); }
 function canImport(){ return featureActionOn("import"); }
+/* per-admin delegation of super-panel sections (By user / Users / Roles & access) */
+function adminGrants(u){ u=u||CURRENT; const g=u&&u.grants; return { users: g?(g.users!==false):true, audit: g?!!g.audit:false, roles: g?!!g.roles:false }; }
+/* super admins are invisible to everyone else — their accounts and their activity are hidden */
+function superUserSet(){ return new Set((DB.users||[]).filter(u=>u.superadmin).map(u=>u.username)); }
+function visibleActivity(){ if(isSuperAdmin()) return DB.activity||[]; const ss=superUserSet(); return (DB.activity||[]).filter(a=>!ss.has(a.user)); }
 function canDelete(){ if(isSuperAdmin()) return true; if(!featureActionOn("delete")) return false; return isAdmin() || !!(DB.settings && DB.settings.allowStaffDelete); }
 
 /* ============================================================
@@ -866,6 +871,10 @@ const NAV = [
     {id:"trash",ico:"♺",label:"Recycle Bin"},
     {id:"settings",ico:"⚙",label:"Settings"},
   ]},
+  {grp:"Management", admin:true, items:[
+    {id:"auditview",ico:"◷",label:"Activity by User"},
+    {id:"rolesview",ico:"◈",label:"Roles & Access"},
+  ]},
   {grp:"Super Admin", super:true, items:[
     {id:"superadmin",ico:"★",label:"Super Admin"},
   ]},
@@ -888,6 +897,10 @@ const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
   if(SUPER_ROUTES.includes(route)) return isSuperAdmin();
+  // delegated super-panel sections for non-super admins (controlled by the super admin)
+  if(route==="auditview") return isAdmin() && !isSuperAdmin() && adminGrants().audit;
+  if(route==="rolesview") return isAdmin() && !isSuperAdmin() && adminGrants().roles;
+  if(route==="users"){ if(isSuperAdmin()) return true; return isAdmin() && adminGrants().users; }
   if(isSuperAdmin()) return true;            // super admin always sees everything
   if(ALWAYS_ALLOWED.includes(route)) return true;
   if(!featureTabOn(route)) return false;     // global hide — applies to admins and all other users
@@ -3889,6 +3902,23 @@ VIEWS.superadmin=function(){
   if(SUPER_TAB.tab==="log") wireSuperLog();
 };
 
+/* Delegated views for ordinary admins the super admin has granted access.
+   They reuse the super-panel builders, which already hide every super-admin
+   user and their activity from non-super viewers. A super admin never lands
+   here (they use the full Super Admin panel instead). */
+VIEWS.auditview=function(){
+  if(!(isAdmin() && !isSuperAdmin() && adminGrants().audit)){ go("dashboard"); return; }
+  setHead("Management","Activity by User","");
+  $("#view").innerHTML=superUserAuditHTML();
+};
+VIEWS.rolesview=function(){
+  if(!(isAdmin() && !isSuperAdmin() && adminGrants().roles)){ go("dashboard"); return; }
+  setHead("Management","Roles & Access","");
+  $("#view").innerHTML=superRolesHTML();
+};
+/* re-render the roles table in whichever context it is being shown */
+function reRoles(){ if(ROUTE==="rolesview") VIEWS.rolesview(); else VIEWS.superadmin(); }
+
 /* ---- Activity log ---- */
 function superLogFiltered(){
   let rows=(DB.activity||[]).slice().sort((a,b)=>b.ts-a.ts);
@@ -3994,6 +4024,7 @@ function superUsersHTML(){
       <td><span class="secbadge ${u.twoFA?"sb-on":"sb-off"}">${u.twoFA?"2FA on":"2FA off"}</span></td>
       <td class="num">
         ${u.role!=="admin"?`<button class="btn sm" onclick="openTabAccess('${u.id}')">Tabs</button>`:""}
+        ${(u.role==="admin"&&!u.superadmin)?`<button class="btn sm" onclick="editGrants('${u.id}')">Permissions</button>`:""}
         <button class="btn sm" onclick="editUser('${u.id}')">Edit</button>
         <button class="btn sm" onclick="resetPass('${u.id}')">Password</button>
         ${u.twoFA&&!you?`<button class="btn sm" onclick="adminDisable2FA('${u.id}')">Reset 2FA</button>`:""}
@@ -4024,11 +4055,39 @@ async function toggleSuperAdmin(id){
     await save(); VIEWS.superadmin(); toast("@"+u.username+" is now a super admin","ok");
   }
 }
+/* Super admin delegates panel sections to an ordinary administrator.
+   These show up for that admin under a plain "Management" menu — no hint
+   that a Super Admin exists. */
+function editGrants(id){
+  if(!isSuperAdmin()) return;
+  const u=DB.users.find(x=>x.id===id); if(!u||u.superadmin) return;
+  const g=adminGrants(u);
+  const row=(k,lbl,desc,on)=>`<label style="display:flex;align-items:flex-start;gap:11px;padding:11px 0;border-bottom:1px dashed var(--line-soft)">
+    <input type="checkbox" data-g="${k}" ${on?"checked":""} style="margin-top:3px">
+    <span style="flex:1"><span class="strong" style="font-size:14px">${esc(lbl)}</span><div class="muted" style="font-size:12px;margin-top:2px">${esc(desc)}</div></span></label>`;
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Permissions — @${esc(u.username)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="notice" style="margin-top:0">Choose which management sections this administrator can open. They appear under a <b>Management</b> menu for that admin. Nothing here reveals the Super Admin panel.</div>
+      ${row("users","Users","Create, edit and manage staff accounts and their tab access.",g.users)}
+      ${row("audit","Activity by User","See who entered what — created, edited and deleted counts per user, and drill into entries.",g.audit)}
+      ${row("roles","Roles & Access","Add and manage roles and their default tab sets.",g.roles)}
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button><button class="btn primary" id="gSave">Save permissions</button></div>`;
+  $("#scrim").classList.add("open"); $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  $("#gSave").onclick=async()=>{
+    const get=k=>{ const el=$(`#modal input[data-g="${k}"]`); return !!(el&&el.checked); };
+    u.grants={ users:get("users"), audit:get("audit"), roles:get("roles") };
+    logAct("Changed permissions","Super Admin","@"+u.username+" · "+["users","audit","roles"].filter(k=>u.grants[k]).join(", "));
+    await save(); closeModal(); VIEWS.superadmin(); toast("Permissions updated for @"+u.username,"ok");
+  };
+}
 
 /* ---- Roles & tab-access defaults (super admin) ---- */
 function superRolesHTML(){
+  const sup=isSuperAdmin();
   const rows=(DB.roles||[]).map(rl=>{
-    const inUse=DB.users.filter(u=>u.role===rl.key).length;
+    const inUse=DB.users.filter(u=>u.role===rl.key && (sup || !u.superadmin)).length;
     const rt=(DB.roleTabs||{})[rl.key];
     const tabTxt=rl.admin?"All tabs (admin)":(Array.isArray(rt)?(rt.length+" tabs"):"All tabs (default)");
     return `<tr>
@@ -4059,7 +4118,7 @@ function addRole(){
       if((DB.roles||[]).some(r=>r.key===key)) key=key+Date.now().toString().slice(-3);
       DB.roles.push({key,label,admin:false});
       logAct("Added role","Super Admin", label);
-      await save(); closeModal(); VIEWS.superadmin(); toast("Role added","ok");
+      await save(); closeModal(); reRoles(); toast("Role added","ok");
     }});
 }
 function renameRole(key){
@@ -4068,7 +4127,7 @@ function renameRole(key){
     fields:[{name:"label",label:"Role name",required:true}],
     onSubmit:async d=>{ const label=(d.label||"").trim(); if(!label){ toast("Enter a name","warn"); return; }
       rl.label=label; logAct("Renamed role","Super Admin", key+" → "+label);
-      await save(); closeModal(); VIEWS.superadmin(); toast("Role renamed","ok"); }});
+      await save(); closeModal(); reRoles(); toast("Role renamed","ok"); }});
 }
 function delRole(key){
   if(key==="user"||key==="admin"){ toast("Built-in roles can't be deleted","warn"); return; }
@@ -4076,7 +4135,7 @@ function delRole(key){
   confirmModal("Delete role","Remove this role?",async()=>{
     DB.roles=DB.roles.filter(r=>r.key!==key); if(DB.roleTabs) delete DB.roleTabs[key];
     logAct("Deleted role","Super Admin", key);
-    await save(); closeModal(); VIEWS.superadmin(); toast("Role deleted","ok");
+    await save(); closeModal(); reRoles(); toast("Role deleted","ok");
   });
 }
 /* ---- Database usage (super admin) ---- */
@@ -4124,7 +4183,7 @@ function superDbHTML(){
 
 /* ---- Data by user (accountability: who entered what) ---- */
 function superUserAuditHTML(){
-  const acts=DB.activity||[];
+  const acts=visibleActivity();   // super-admin activity is hidden from non-super viewers
   const by={};
   acts.forEach(a=>{
     const u=a.user||"(unknown)"; if(!by[u]) by[u]={name:a.name||u,role:a.role||"",created:0,edited:0,deleted:0,total:0,last:0,modules:{}};
@@ -4146,7 +4205,7 @@ function superUserAuditHTML(){
       <td class="num">${num(s.total)}</td>
       <td style="font-size:12px;color:var(--ink-soft)">${esc(topMods||"—")}</td>
       <td class="num" style="white-space:nowrap;font-size:12px">${s.last?fmtTs(s.last).split(",")[0]:"—"}</td>
-      <td class="num"><button class="btn sm" onclick="superViewUser('${esc(u)}')">View entries</button></td></tr>`;
+      <td class="num"><button class="btn sm" onclick="userEntriesModal('${esc(u)}')">View entries</button></td></tr>`;
   }).join("") : `<tr><td colspan="8" class="muted" style="text-align:center;padding:26px">No recorded activity yet.</td></tr>`;
   return `<div class="notice">Who entered what. Each row is a user's recorded activity — <b>created</b>, <b>edited</b> and <b>deleted</b> counts across all modules — so you can see responsibility and spot-check accuracy. Click <b>View entries</b> to see every action by that user, then open the record to verify it.</div>
     <div class="panel"><div class="panel-head"><h3>Data entry by user</h3><div class="meta">${users.length} user${users.length===1?"":"s"} with activity</div></div>
@@ -4155,6 +4214,23 @@ function superUserAuditHTML(){
         <tbody>${rows}</tbody></table></div></div>`;
 }
 function superViewUser(username){ SUPER_TAB.user=username; SUPER_TAB.module="All"; SUPER_TAB.q=""; SUPER_TAB.from=""; SUPER_TAB.to=""; SUPER_TAB.tab="log"; VIEWS.superadmin(); }
+/* drill-down: every recorded action by one user (super-admin activity stays hidden) */
+function userEntriesModal(username){
+  const ss=superUserSet();
+  if(!isSuperAdmin() && ss.has(username)) return;   // never reveal a super admin's entries
+  const rows=visibleActivity().filter(a=>a.user===username).sort((a,b)=>b.ts-a.ts).slice(0,400);
+  const body=rows.length?rows.map(r=>`<tr>
+      <td class="num" style="white-space:nowrap;font-size:12px">${fmtTs(r.ts)}</td>
+      <td>${esc(r.action||"")}</td><td><span class="tag">${esc(r.module||"")}</span></td>
+      <td style="font-size:12.5px">${esc(r.detail||"")}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="muted" style="text-align:center;padding:20px">No entries.</td></tr>`;
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Entries by @${esc(username)}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><div class="notice" style="margin-top:0">${rows.length} action${rows.length===1?"":"s"}${rows.length>=400?" (latest 400)":""}. Open the matching record in its tab to verify accuracy.</div>
+      <div style="overflow-x:auto"><table><thead><tr><th>When</th><th>Action</th><th>Module</th><th>Detail</th></tr></thead><tbody>${body}</tbody></table></div></div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button></div>`;
+  $("#scrim").classList.add("open"); $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+}
 
 /* ---- Feature visibility (super admin controls what everyone else sees) ---- */
 function superVisibilityHTML(){
@@ -4211,7 +4287,7 @@ function roleTabsEdit(key){
     const sel=$$("#modal input[data-tab]").filter(c=>c.checked).map(c=>c.dataset.tab);
     if(!DB.roleTabs) DB.roleTabs={}; DB.roleTabs[key]=sel;
     logAct("Set role default tabs","Super Admin", rl.label+" · "+sel.length+" tabs");
-    await save(); closeModal(); VIEWS.superadmin(); toast("Default tabs saved for "+rl.label,"ok");
+    await save(); closeModal(); reRoles(); toast("Default tabs saved for "+rl.label,"ok");
   };
 }
 
