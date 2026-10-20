@@ -550,6 +550,7 @@ function poValue(po){
 function poAvgPrice(po){ const q=Number(po.quantity||0); return q? poValue(po)/q : Number(po.unitPrice||0); }
 function poPriceSet(po){ return [...new Set(poLines(po).map(l=>Number(l.price)).filter(x=>x>0))]; }
 function poHasMultiPrice(po){ return poLines(po).length>1 && poPriceSet(po).length>1; }
+function poBody(po){ if(po.body) return po.body; const m=(po.notes||"").match(/Body#\s*([A-Za-z0-9\-]+)/i); return m?m[1]:""; }
 function bomFor(poId){ return DB.bom.filter(m=>m.poId===poId); }
 function materialProgress(poId){
   const items=bomFor(poId); if(!items.length) return {pct:0,done:0,total:0};
@@ -1337,7 +1338,7 @@ VIEWS.pos=function(){
   const filtered = DB.pos.filter(p=>{
     if(FILTERS.po!=="All" && p.status!==FILTERS.po) return false;
     if(q){
-      const hay=((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+(p.colors||"")+" "+buyerName(p.buyerId)).toLowerCase();
+      const hay=((p.poNumber||"")+" "+(p.style||"")+" "+poBody(p)+" "+(p.garment||"")+" "+(p.colors||"")+" "+buyerName(p.buyerId)).toLowerCase();
       if(!hay.includes(q)) return false;
     }
     if(dFrom && !((p.deliveryDate||"")>=dFrom)) return false;   // filter by delivery date range
@@ -1346,8 +1347,9 @@ VIEWS.pos=function(){
   }).sort((a,b)=> dateActive ? (a.deliveryDate||"").localeCompare(b.deliveryDate||"") : 0);
   const rows = filtered.length?filtered.map(p=>{
     const mp=materialProgress(p.id), pp=productionProgress(p);
+    const bdy=poBody(p);
     return `<tr class="clk" data-po="${p.id}">
-      <td><div class="strong">${esc(p.poNumber)}</div><div class="muted" style="font-size:12px">${esc(p.style)} · ${esc(p.garment)}</div></td>
+      <td><div class="strong">${esc(p.poNumber)}</div><div class="muted" style="font-size:12px">${esc(p.style)} · ${esc(p.garment)}</div>${bdy?`<div class="muted" style="font-size:11.5px">Body# ${esc(bdy)}</div>`:""}</td>
       <td>${esc(buyerName(p.buyerId))}</td>
       <td class="num">${num(p.quantity)}</td>
       <td class="num">${money(poValue(p),p.currency)}</td>
@@ -1467,6 +1469,7 @@ function openPO(id){
     <div class="panel"><div class="panel-head"><h3>Order details</h3></div><div class="panel-pad">
       ${detailLine("Buyer",buyerName(p.buyerId))}
       ${detailLine("Style",p.style)}
+      ${poBody(p)?detailLine("Body#",poBody(p)):""}
       ${detailLine("Garment",p.garment)}
       ${detailLine("Fabric",p.fabric)}
       ${detailLine("Colours",p.colors)}
@@ -3489,7 +3492,7 @@ function parseShiranPO(pages){
 
   return {
     poNumber, buyer, buyerCountry:"United States", vendor:"Active Plus Trading-FZCO",
-    style, garment: garment? garment.replace(/\s+/g," ").replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase()) : "",
+    style, body, garment: garment? garment.replace(/\s+/g," ").replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase()) : "",
     fabric:"", color, quantity, unitPrice, lines:orderLines, currency:"USD",
     orderDate:issue||today(), deliveryDate:etd||"", eta:eta||"",
     shipTerms:(shipTerms||"").trim(), shipVia, hts, retail:0,
@@ -3499,7 +3502,7 @@ function parseShiranPO(pages){
 }
 async function extractPOviaAI(base64){
   const prompt=`You are a data-extraction engine for a garment manufacturing ERP. Read the attached buyer purchase order PDF and return ONLY a JSON object (no markdown fences, no commentary) with EXACTLY these keys:
-{"poNumber":string,"buyer":string,"buyerCountry":string,"vendor":string,"style":string,"garment":string,"fabric":string,"color":string,"quantity":number,"unitPrice":number,"lines":[{"style":string,"color":string,"label":string,"pack":string,"price":number,"qty":number}],"currency":string,"orderDate":"YYYY-MM-DD","deliveryDate":"YYYY-MM-DD","eta":"YYYY-MM-DD","shipTerms":string,"shipVia":string,"hts":string,"retail":number,"sizes":string,"sizeBreakdown":{"<size>":number},"notes":string,"materials":[{"material":string,"type":"Fabric|Thread|Trim|Packaging|Other","color":string,"supplier":string,"unit":string}]}
+{"poNumber":string,"buyer":string,"buyerCountry":string,"vendor":string,"style":string,"body":string,"garment":string,"fabric":string,"color":string,"quantity":number,"unitPrice":number,"lines":[{"style":string,"color":string,"label":string,"pack":string,"price":number,"qty":number}],"currency":string,"orderDate":"YYYY-MM-DD","deliveryDate":"YYYY-MM-DD","eta":"YYYY-MM-DD","shipTerms":string,"shipVia":string,"hts":string,"retail":number,"sizes":string,"sizeBreakdown":{"<size>":number},"notes":string,"materials":[{"material":string,"type":"Fabric|Thread|Trim|Packaging|Other","color":string,"supplier":string,"unit":string}]}
 Rules: deliveryDate = the ETD (ship) date. buyer = the CUSTOMER/retailer the goods are made for. garment = the style description in Title Case. quantity = total order quantity. lines = ONE entry per STYLE# order block, each carrying that block's own DDP/FOB unit price and that block's total quantity (a PO may repeat the same style/colour at different prices, e.g. GOH vs Flat pack — keep them as separate lines). unitPrice = the price when all lines share one price, else the first line's price. Combine duplicate material rows. Use "" or 0 when a value is absent. Return only the JSON object.`;
   let resp;
   if(HAS_STORE){
@@ -3653,7 +3656,7 @@ async function commitImport(thenEdit){
   if(existing){
     poId=existing.id;
     Object.assign(existing,{
-      buyerId, style:d.style||existing.style, garment:d.garment||existing.garment, fabric:d.fabric||existing.fabric,
+      buyerId, style:d.style||existing.style, body:d.body||existing.body||"", garment:d.garment||existing.garment, fabric:d.fabric||existing.fabric,
       quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||existing.currency||"USD",
       lines,
       deliveryDate:d.deliveryDate||existing.deliveryDate, eta:d.eta||existing.eta,
@@ -3671,7 +3674,7 @@ async function commitImport(thenEdit){
   poId=uid("po");
   DB.pos.push({
     id:poId, poNumber:pn||("PO-"+Date.now()), buyerId,
-    style:d.style||"", garment:d.garment||"Garment", fabric:d.fabric||"",
+    style:d.style||"", body:d.body||"", garment:d.garment||"Garment", fabric:d.fabric||"",
     quantity:Number(d.quantity||0), unitPrice:Number(d.unitPrice||0), currency:d.currency||"USD",
     lines,
     orderDate:d.orderDate||today(), deliveryDate:d.deliveryDate||"", eta:d.eta||"",
