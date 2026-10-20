@@ -703,6 +703,9 @@ async function initData(){
   ];
   if(!DB.roleTabs) DB.roleTabs={};   // roleKey → array of allowed tab ids (default-applied on user create); missing = all
   if(!DB.activity) DB.activity=[];   // super-admin activity log
+  if(!DB.featureVis) DB.featureVis={tabs:{},actions:{}};   // super-admin global show/hide (tabs + actions)
+  if(!DB.featureVis.tabs) DB.featureVis.tabs={};
+  if(!DB.featureVis.actions) DB.featureVis.actions={};
   syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
   if(DB.users.length && !DB.users.some(u=>u.superadmin)){
@@ -718,7 +721,13 @@ async function initData(){
   if(DB.trash.length!==before) await storeSet(DB);
 }
 /* permissions */
-function canDelete(){ return isAdmin() || !!(DB.settings && DB.settings.allowStaffDelete); }
+/* global feature visibility — super admin controls what everyone else sees (tabs + actions).
+   Super admin always sees/does everything; a missing key means "on". */
+function featureTabOn(id){ if(isSuperAdmin()) return true; return (((DB.featureVis&&DB.featureVis.tabs)||{})[id]!==false); }
+function featureActionOn(key){ if(isSuperAdmin()) return true; return (((DB.featureVis&&DB.featureVis.actions)||{})[key]!==false); }
+function canExport(){ return featureActionOn("export"); }
+function canImport(){ return featureActionOn("import"); }
+function canDelete(){ if(isSuperAdmin()) return true; if(!featureActionOn("delete")) return false; return isAdmin() || !!(DB.settings && DB.settings.allowStaffDelete); }
 
 /* ============================================================
    RECYCLE BIN  (soft delete → restore, auto-purge after 30 days)
@@ -879,8 +888,10 @@ const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
   if(SUPER_ROUTES.includes(route)) return isSuperAdmin();
-  if(isAdmin()) return true;
+  if(isSuperAdmin()) return true;            // super admin always sees everything
   if(ALWAYS_ALLOWED.includes(route)) return true;
+  if(!featureTabOn(route)) return false;     // global hide — applies to admins and all other users
+  if(isAdmin()) return true;
   if(ADMIN_ROUTES.includes(route)) return false;
   const allowed = CURRENT && CURRENT.allowedTabs;
   if(!allowed) return true;                 // no restriction set → sees all operational tabs
@@ -1330,7 +1341,7 @@ function delSupplier(id){
 
 /* ---------- PURCHASE ORDERS ---------- */
 VIEWS.pos=function(){
-  setHead("Sales","Purchase Orders",`<button class="btn" onclick="openImport()">⤓ Import PO (PDF)</button> <button class="btn primary" onclick="editPO()">+ New PO</button>`);
+  setHead("Sales","Purchase Orders",`${canImport()?`<button class="btn" onclick="openImport()">⤓ Import PO (PDF)</button> `:""}<button class="btn primary" onclick="editPO()">+ New PO</button>`);
   if(!DB.buyers.length){ return emptyState("Add a buyer first","Purchase orders are placed by buyers — create one to begin.","go('buyers')","Go to buyers"); }
   const tabs=["All"].concat(PO_STATUS);
   const q=(PO_SEARCH||"").trim().toLowerCase();
@@ -2009,7 +2020,7 @@ function subInRange(e){
 VIEWS.subcontract=function(){
   const admin=isAdmin();
   setHead("Operations","Sub Contract Production",
-    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> <button class="btn" onclick="exportSubcontract()">⬆ Export Excel</button> ${admin?`<button class="btn" onclick="manageSubfactories()">Manage sub-factories</button> `:""}<button class="btn primary" onclick="editSub()">+ Add production</button>`);
+    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> ${canExport()?`<button class="btn" onclick="exportSubcontract()">⬆ Export Excel</button> `:""}${admin?`<button class="btn" onclick="manageSubfactories()">Manage sub-factories</button> `:""}<button class="btn primary" onclick="editSub()">+ Add production</button>`);
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Sub-contract production is logged against an existing PO.","go('pos')","Open orders"); }
 
   SUB_FILTER.month = SUB_FILTER.month || thisMonth();
@@ -2283,7 +2294,7 @@ const FG_FILTER={q:"",tab:"stock"};
 
 VIEWS.finished=function(){
   setHead("Operations","Finished Goods",
-    `<button class="btn" onclick="exportFinished()">⬆ Export Excel</button> <button class="btn" onclick="sellFG()">+ Record sale</button> <button class="btn primary" onclick="editFG()">+ Add finished goods</button>`);
+    `${canExport()?`<button class="btn" onclick="exportFinished()">⬆ Export Excel</button> `:""}<button class="btn" onclick="sellFG()">+ Record sale</button> <button class="btn primary" onclick="editFG()">+ Add finished goods</button>`);
   const fg=DB.finishedGoods||[], sales=DB.fgSales||[];
   const q=(FG_FILTER.q||"").trim().toLowerCase();
   const match=f=>{ if(!q) return true; const po=poByNumber(f.poId); return ((po?po.poNumber:"")+" "+(f.style||"")+" "+(f.color||"")+" "+(f.size||"")+" "+(po?po.garment:"")).toLowerCase().includes(q); };
@@ -2805,8 +2816,8 @@ function invFilteredRows(){
 
 VIEWS.inventory=function(){
   setHead("Procurement","Inventory",
-    `<button class="btn" onclick="exportInventory()">⬆ Export Excel</button> `+
-    `<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> `+
+    `${canExport()?`<button class="btn" onclick="exportInventory()">⬆ Export Excel</button> `:""}`+
+    `${canImport()?`<button class="btn" onclick="openInvImport()">⬍ Import Excel</button> `:""}`+
     `<button class="btn" onclick="go('issues')">Issue Notes</button> `+
     `<button class="btn danger" onclick="openIssueNote()">− Fabric Issue</button> `+
     `<button class="btn primary" onclick="editInv()">+ Add item</button>`);
@@ -3862,14 +3873,16 @@ function fmtTs(ts){ try{ return new Date(ts).toLocaleString(); }catch(e){ return
 
 VIEWS.superadmin=function(){
   if(!isSuperAdmin()){ go("dashboard"); return; }
-  const titles={log:"Activity Log",users:"User Management",roles:"Roles & Access",db:"Database Usage"};
+  const titles={log:"Activity Log",audit:"Data by User",users:"User Management",roles:"Roles & Access",visibility:"Feature Visibility",db:"Database Usage"};
   setHead("Super Admin", titles[SUPER_TAB.tab]||"Super Admin","");
-  const pills=[["log","Activity log"],["users","Users"],["roles","Roles & access"],["db","Database"]]
+  const pills=[["log","Activity log"],["audit","By user"],["users","Users"],["roles","Roles & access"],["visibility","Visibility"],["db","Database"]]
     .map(([k,l])=>`<div class="fp ${SUPER_TAB.tab===k?"on":""}" data-st="${k}">${l}</div>`).join("");
   let bodyHTML="";
   if(SUPER_TAB.tab==="log") bodyHTML=superLogHTML();
+  else if(SUPER_TAB.tab==="audit") bodyHTML=superUserAuditHTML();
   else if(SUPER_TAB.tab==="users") bodyHTML=superUsersHTML();
   else if(SUPER_TAB.tab==="db") bodyHTML=superDbHTML();
+  else if(SUPER_TAB.tab==="visibility") bodyHTML=superVisibilityHTML();
   else bodyHTML=superRolesHTML();
   $("#view").innerHTML=`<div class="toolbar"><div class="filterpills">${pills}</div></div>${bodyHTML}`;
   $$(".fp[data-st]").forEach(f=>f.onclick=()=>{ SUPER_TAB.tab=f.dataset.st; VIEWS.superadmin(); });
@@ -4107,6 +4120,75 @@ function superDbHTML(){
         <tbody>${rows}
           <tr style="border-top:2px solid var(--line)"><td class="strong">Total</td><td></td><td class="num strong">${fmtBytes(total)}</td><td class="num strong">100%</td></tr>
         </tbody></table></div></div>`;
+}
+
+/* ---- Data by user (accountability: who entered what) ---- */
+function superUserAuditHTML(){
+  const acts=DB.activity||[];
+  const by={};
+  acts.forEach(a=>{
+    const u=a.user||"(unknown)"; if(!by[u]) by[u]={name:a.name||u,role:a.role||"",created:0,edited:0,deleted:0,total:0,last:0,modules:{}};
+    const act=(a.action||"").toLowerCase();
+    if(/delete|revers/.test(act)) by[u].deleted++;
+    else if(/edit|updat|revis|chang|reset/.test(act)) by[u].edited++;
+    else if(/add|creat|import|issue|sale|production|book|signed/.test(act)) by[u].created++;
+    by[u].total++; if(a.ts>by[u].last) by[u].last=a.ts;
+    if(a.module){ by[u].modules[a.module]=(by[u].modules[a.module]||0)+1; }
+  });
+  const users=Object.entries(by).sort((a,b)=>b[1].total-a[1].total);
+  const rows=users.length?users.map(([u,s])=>{
+    const topMods=Object.entries(s.modules).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([m,c])=>`${esc(m)} ${c}`).join(" · ");
+    return `<tr>
+      <td><div class="strong">@${esc(u)}</div><div class="muted" style="font-size:11.5px">${esc(s.name)}${s.role?" · "+esc(roleLabel(s.role)):""}</div></td>
+      <td class="num strong">${num(s.created)}</td>
+      <td class="num">${num(s.edited)}</td>
+      <td class="num" style="color:${s.deleted?'#c0392b':'inherit'}">${num(s.deleted)}</td>
+      <td class="num">${num(s.total)}</td>
+      <td style="font-size:12px;color:var(--ink-soft)">${esc(topMods||"—")}</td>
+      <td class="num" style="white-space:nowrap;font-size:12px">${s.last?fmtTs(s.last).split(",")[0]:"—"}</td>
+      <td class="num"><button class="btn sm" onclick="superViewUser('${esc(u)}')">View entries</button></td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted" style="text-align:center;padding:26px">No recorded activity yet.</td></tr>`;
+  return `<div class="notice">Who entered what. Each row is a user's recorded activity — <b>created</b>, <b>edited</b> and <b>deleted</b> counts across all modules — so you can see responsibility and spot-check accuracy. Click <b>View entries</b> to see every action by that user, then open the record to verify it.</div>
+    <div class="panel"><div class="panel-head"><h3>Data entry by user</h3><div class="meta">${users.length} user${users.length===1?"":"s"} with activity</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
+        <thead><tr><th>User</th><th class="num">Created</th><th class="num">Edited</th><th class="num">Deleted</th><th class="num">Total</th><th>Most active in</th><th class="num">Last entry</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+}
+function superViewUser(username){ SUPER_TAB.user=username; SUPER_TAB.module="All"; SUPER_TAB.q=""; SUPER_TAB.from=""; SUPER_TAB.to=""; SUPER_TAB.tab="log"; VIEWS.superadmin(); }
+
+/* ---- Feature visibility (super admin controls what everyone else sees) ---- */
+function superVisibilityHTML(){
+  const tv=(DB.featureVis&&DB.featureVis.tabs)||{}, av=(DB.featureVis&&DB.featureVis.actions)||{};
+  const tabList=["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","finished","cheque","users","trash","settings"];
+  const tabRow=t=>{ const on=tv[t]!==false; return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px">
+    <input type="checkbox" ${on?"checked":""} onchange="toggleFeatureTab('${t}',this.checked)"> <span style="flex:1">${esc(tabLabel(t))}</span>
+    <span class="muted" style="font-size:11.5px">${on?"shown":"hidden"}</span></label>`; };
+  const actRow=(k,lbl,desc)=>{ const on=av[k]!==false; return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px">
+    <input type="checkbox" ${on?"checked":""} onchange="toggleFeatureAction('${k}',this.checked)"> <span style="flex:1">${esc(lbl)}<div class="muted" style="font-size:11.5px">${esc(desc)}</div></span>
+    <span class="muted" style="font-size:11.5px">${on?"on":"off"}</span></label>`; };
+  return `<div class="notice">Tick = shown/allowed for everyone. Untick = hidden/disabled for <b>every other user, including admins</b> — only you (Super Admin) still see and use it. This is a master switch on top of each user's own tab access.</div>
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Pages</h3><div class="meta">which tabs other users can open</div></div>
+        <div class="panel-pad">${tabList.map(tabRow).join("")}</div></div>
+      <div class="panel"><div class="panel-head"><h3>Actions</h3><div class="meta">key abilities for other users</div></div>
+        <div class="panel-pad">
+          ${actRow("delete","Delete records","Delete buttons across the app (records still go to Recycle Bin for admins when on).")}
+          ${actRow("export","Export to Excel","⬆ Export buttons on Inventory, Sub-contract, Finished Goods.")}
+          ${actRow("import","Import (PO PDF / Excel)","⤓ Import PO and ⬍ Import Excel buttons.")}
+        </div></div>
+    </div>`;
+}
+async function toggleFeatureTab(id,on){
+  if(!DB.featureVis) DB.featureVis={tabs:{},actions:{}}; if(!DB.featureVis.tabs) DB.featureVis.tabs={};
+  DB.featureVis.tabs[id]=!!on;
+  logAct(on?"Showed page":"Hid page","Super Admin", tabLabel(id));
+  await save(); buildNav(); toast(tabLabel(id)+(on?" shown to users":" hidden from users"),"ok");
+}
+async function toggleFeatureAction(key,on){
+  if(!DB.featureVis) DB.featureVis={tabs:{},actions:{}}; if(!DB.featureVis.actions) DB.featureVis.actions={};
+  DB.featureVis.actions[key]=!!on;
+  logAct(on?"Enabled action":"Disabled action","Super Admin", key);
+  await save(); toast(key+(on?" enabled":" disabled")+" for users","ok");
 }
 function roleTabsEdit(key){
   const rl=(DB.roles||[]).find(r=>r.key===key); if(!rl) return;
