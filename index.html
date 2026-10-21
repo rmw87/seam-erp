@@ -2080,16 +2080,20 @@ VIEWS.subcontract=function(){
   allMonth.forEach(e=>{ const k=e.subId; if(!bySub[k]) bySub[k]={qty:0,inc:0}; bySub[k].qty+=Number(e.qty||0); bySub[k].inc+=subIncome(e); });
   const subSummary=Object.entries(bySub).map(([sid,v])=>`<div class="stat-line"><span>${esc(subName(sid))}</span><span class="strong">${num(v.qty)} pcs · ${cmMoney(v.inc)}</span></div>`).join("") || `<div class="muted" style="font-size:13px">No entries yet.</div>`;
 
-  // per-PO progress: cut qty vs total out vs balance (all time, across sub-factories)
-  const poIds=Array.from(new Set(DB.subcontract.map(e=>e.poId)));
-  const poProgress=poIds.map(pid=>{
-    const po=poByNumber(pid); const cut=subCutQty(pid); const out=subTotalOut(pid,null); const bal=cut-out;
+  // per-PO progress — follows the filter above (period / date range / sub-factory / search).
+  // Only POs appearing in the currently shown rows are listed; when a sub-factory is
+  // selected, "out" is counted for that sub-factory only.
+  const subFilt = SUB_FILTER.sub!=="All" ? SUB_FILTER.sub : null;
+  const outFor = pid => DB.subcontract.filter(d=>d.poId===pid && (!subFilt || d.subId===subFilt)).reduce((a,d)=>a+Number(d.qty||0),0);
+  const progPoIds = Array.from(new Set(rows.map(e=>e.poId)));
+  const poProgress=progPoIds.map(pid=>{
+    const po=poByNumber(pid); const cut=subCutQty(pid); const out=outFor(pid); const bal=cut-out;
     const pct=cut>0?Math.min(100,Math.round(out/cut*100)):0;
     return `<div style="margin-bottom:10px">
       <div class="stat-line" style="border:none;padding:2px 0"><span>${po?esc(po.poNumber+" · "+(po.style||po.garment)):"—"}</span>
         <span class="strong">${num(out)} / ${cut?num(cut):"—"} out${cut?` · bal ${num(bal)}`:""}</span></div>
       ${cut>0?`<div style="height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden"><div style="height:100%;width:${pct}%;background:${bal<0?'var(--danger,#d9534f)':'var(--accent,#2e7d6b)'}"></div></div>`:""}</div>`;
-  }).join("") || `<div class="muted" style="font-size:13px">No cut quantity recorded yet.</div>`;
+  }).join("") || `<div class="muted" style="font-size:13px">No sub-contract production ${sq?"matching this search":"in this period"}${subFilt?" at this sub-factory":""}.</div>`;
 
   const subTabs = `<div class="fp ${SUB_FILTER.sub==="All"?"on":""}" data-s="All">All sub-factories</div>`+
     DB.subfactories.map(s=>`<div class="fp ${SUB_FILTER.sub===s.id?"on":""}" data-s="${s.id}">${esc(s.name)}</div>`).join("");
@@ -2127,7 +2131,7 @@ VIEWS.subcontract=function(){
         <div class="panel-pad">${subSummary}
           <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthInc)}</span></div>
         </div></div>
-      <div class="panel"><div class="panel-head"><h3>Cut qty progress by PO</h3><div class="meta">out vs balance (all sub-factories)</div></div>
+      <div class="panel"><div class="panel-head"><h3>Cut qty progress by PO</h3><div class="meta">out vs balance · ${subFilt?esc(subName(SUB_FILTER.sub)):"all sub-factories"} · ${sq?"“"+esc(SUB_FILTER.q)+"”":periodLabel}</div></div>
         <div class="panel-pad">${poProgress}</div></div>
     </div>`;
   $("#smonth").onchange=e=>{ SUB_FILTER.month=e.target.value; VIEWS.subcontract(); };
