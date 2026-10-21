@@ -2312,6 +2312,15 @@ function fgBalance(f){ return Number(f.qty||0)-fgSoldQty(f.id); }
 function fgValue(f){ return fgBalance(f)*Number(f.unitCost||0); }
 function fgSaleTotal(s){ return Number(s.qty||0)*Number(s.unitPrice||0); }
 function fgLabel(f){ const po=poByNumber(f.poId); return (po?po.poNumber+" · ":"")+(f.style||"")+(f.color?" · "+f.color:"")+(f.size?" · "+f.size:""); }
+/* unique size names declared on a PO (top-level + any colour lines) */
+function poSizeNames(po){
+  const set=new Set();
+  if(po){
+    if(po.sizeBreakdown) Object.keys(po.sizeBreakdown).forEach(s=>set.add(s));
+    (po.lines||[]).forEach(l=>{ if(l&&l.sizeBreakdown) Object.keys(l.sizeBreakdown).forEach(s=>set.add(s)); });
+  }
+  return Array.from(set);
+}
 const FG_FILTER={q:"",tab:"stock"};
 
 VIEWS.finished=function(){
@@ -2398,37 +2407,76 @@ function editFG(id, presetPo){
         <label class="fld"><span class="lab">Style</span><input id="fg_style" value="${f?esc(f.style||""):""}" placeholder="auto from PO"></label>
         <label class="fld"><span class="lab">Colour</span><input id="fg_color" value="${f?esc(f.color||""):""}" placeholder="e.g. Rich Black"></label>
       </div>
-      <div class="row3">
-        <label class="fld"><span class="lab">Size</span><input id="fg_size" value="${f?esc(f.size||""):""}" placeholder="e.g. M (optional)"></label>
-        <label class="fld"><span class="lab">Quantity (pcs) *</span><input id="fg_qty" type="number" min="0" value="${f&&f.qty!=null?f.qty:""}" placeholder="excess pieces"></label>
+      <div class="row2">
         <label class="fld"><span class="lab">Unit cost (USD)</span><input id="fg_cost" type="number" step="0.001" min="0" value="${f&&f.unitCost!=null?f.unitCost:""}" placeholder="cost / pc"></label>
+        <label class="fld"><span class="lab">Remark</span><input id="fg_remark" value="${f?esc(f.remark||""):""}" placeholder="optional note"></label>
       </div>
-      <label class="fld"><span class="lab">Remark</span><input id="fg_remark" value="${f?esc(f.remark||""):""}" placeholder="optional note"></label>
+      ${id?`<div class="row2">
+        <label class="fld"><span class="lab">Size</span><input id="fg_size" value="${esc(f.size||"")}" placeholder="e.g. M (optional)"></label>
+        <label class="fld"><span class="lab">Quantity (pcs) *</span><input id="fg_qty" type="number" min="0" value="${f&&f.qty!=null?f.qty:""}" placeholder="excess pieces"></label>
+      </div>`:`
+      <div class="panel-pad" style="background:var(--surface-2);border-radius:10px;margin-top:4px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.07em">Excess quantity by size</span>
+          <button type="button" class="btn sm" id="fg_addsize">+ Add size</button></div>
+        <div id="fg_sizes"></div>
+        <div class="stat-line" style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px"><span class="muted" style="font-size:12.5px">Total excess</span><span class="strong" id="fg_total">0 pcs</span></div>
+        <div class="muted" style="font-size:11.5px;margin-top:6px">Leave a size blank for unsized stock. Only rows with a quantity are saved.</div>
+      </div>`}
     </div>
     <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
       <button class="btn primary" id="fg_save">${id?"Save":"Add to stock"}</button></div>`;
   $("#scrim").classList.add("open");
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
   const poSel=$("#fg_po"), styleInp=$("#fg_style"), info=$("#fg_poinfo");
+
+  // ---- multi-size grid (add mode only) ----
+  function sizeRowsEmpty(){ return $$("#fg_sizes .fg_srow").every(r=>!r.querySelector(".fg_sz").value.trim() && !r.querySelector(".fg_q").value.trim()); }
+  function recalcTotal(){ const t=$$("#fg_sizes .fg_srow").reduce((a,r)=>a+Number(r.querySelector(".fg_q").value||0),0); const el=$("#fg_total"); if(el) el.textContent=num(t)+" pcs"; }
+  function addSizeRow(sz,q){
+    const wrap=$("#fg_sizes"); if(!wrap) return;
+    const row=document.createElement("div");
+    row.className="fg_srow"; row.style.cssText="display:flex;gap:8px;align-items:center;margin-bottom:6px";
+    row.innerHTML=`<input class="fg_sz" placeholder="Size (e.g. M)" value="${esc(sz||"")}" style="flex:1;min-width:0">
+      <input class="fg_q" type="number" min="0" placeholder="pcs" value="${q!=null?q:""}" style="width:110px">
+      <button type="button" class="btn sm danger fg_rm" title="Remove" style="padding:4px 9px">×</button>`;
+    wrap.appendChild(row);
+    row.querySelector(".fg_q").oninput=recalcTotal;
+    row.querySelector(".fg_rm").onclick=()=>{ row.remove(); if(!$$("#fg_sizes .fg_srow").length) addSizeRow("",""); recalcTotal(); };
+  }
+  if(!id){ addSizeRow("",""); const ab=$("#fg_addsize"); if(ab) ab.onclick=()=>addSizeRow("",""); }
+
   function refreshPO(){
     const po=poByNumber(poSel.value);
     if(po){ if(!styleInp.value) styleInp.value=po.style||"";
       const shipped=shippedQty(po.id); const fgForPo=(DB.finishedGoods||[]).filter(x=>x.poId===po.id).reduce((a,x)=>a+Number(x.qty||0),0);
       info.style.display="block";
       info.innerHTML=`<b>Order qty:</b> ${num(po.quantity)} &nbsp;·&nbsp; <b>Shipped:</b> ${num(shipped)} &nbsp;·&nbsp; <b>Already in FG stock:</b> ${num(fgForPo)} pcs`;
+      // seed the size grid from the PO's sizes (add mode, only when nothing typed yet)
+      if(!id && sizeRowsEmpty()){ const names=poSizeNames(po); if(names.length){ $("#fg_sizes").innerHTML=""; names.forEach(s=>addSizeRow(s,"")); recalcTotal(); } }
     } else info.style.display="none";
   }
   poSel.onchange=refreshPO; refreshPO();
+
   $("#fg_save").onclick=async()=>{
-    const poId=poSel.value, date=$("#fg_date").value, qty=Number($("#fg_qty").value||0);
+    const poId=poSel.value, date=$("#fg_date").value;
     if(!date){ toast("Date is required","warn"); return; }
-    if(qty<=0){ toast("Enter the quantity","warn"); return; }
     const po=poByNumber(poId);
-    const rec={poId, date, style:$("#fg_style").value.trim()||(po?po.style:""), color:$("#fg_color").value.trim(),
-      size:$("#fg_size").value.trim(), qty, unitCost:Number($("#fg_cost").value||0), remark:$("#fg_remark").value.trim()};
-    if(id){ const cur=DB.finishedGoods.find(x=>x.id===id); if(fgSoldQty(id)>qty){ toast("Quantity can't be less than already sold ("+num(fgSoldQty(id))+")","warn"); return; } Object.assign(cur,rec); }
-    else { DB.finishedGoods.push({id:uid("fg"),...rec,by:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
-    logAct(id?"Edited finished goods":"Added finished goods","Finished Goods", (po?po.poNumber+" · ":"")+(rec.style||"")+" "+(rec.color||"")+" · "+num(qty)+" pcs");
+    const style=$("#fg_style").value.trim()||(po?po.style:""), color=$("#fg_color").value.trim();
+    const unitCost=Number($("#fg_cost").value||0), remark=$("#fg_remark").value.trim();
+    if(id){
+      const qty=Number($("#fg_qty").value||0);
+      if(qty<=0){ toast("Enter the quantity","warn"); return; }
+      const cur=DB.finishedGoods.find(x=>x.id===id); if(fgSoldQty(id)>qty){ toast("Quantity can't be less than already sold ("+num(fgSoldQty(id))+")","warn"); return; }
+      Object.assign(cur,{poId,date,style,color,size:$("#fg_size").value.trim(),qty,unitCost,remark});
+      logAct("Edited finished goods","Finished Goods", (po?po.poNumber+" · ":"")+(style||"")+" "+(color||"")+" · "+num(qty)+" pcs");
+    } else {
+      const rows=$$("#fg_sizes .fg_srow").map(r=>({size:r.querySelector(".fg_sz").value.trim(), qty:Number(r.querySelector(".fg_q").value||0)})).filter(r=>r.qty>0);
+      if(!rows.length){ toast("Enter a quantity for at least one size","warn"); return; }
+      let total=0;
+      rows.forEach(r=>{ DB.finishedGoods.push({id:uid("fg"),poId,date,style,color,size:r.size,qty:r.qty,unitCost,remark,by:CURRENT?CURRENT.username:"",createdAt:Date.now()}); total+=r.qty; });
+      logAct("Added finished goods","Finished Goods", (po?po.poNumber+" · ":"")+(style||"")+" "+(color||"")+" · "+rows.length+" size"+(rows.length===1?"":"s")+" · "+num(total)+" pcs");
+    }
     await save(); closeModal(); VIEWS.finished(); toast(id?"Updated":"Added to finished-goods stock","ok");
   };
 }
