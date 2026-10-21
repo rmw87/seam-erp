@@ -2543,14 +2543,14 @@ VIEWS.settings=function(){
     <div class="panel"><div class="panel-head"><h3>Recycle Bin</h3></div>
       <div class="panel-pad"><div class="muted" style="font-size:13px">Deleted records are retained for 30 days, then auto-removed. Open the <span class="linklike" onclick="go('trash')">Recycle Bin</span> to restore or permanently delete.</div></div></div>
 
-    <div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
+    ${isSuperAdmin()?`<div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
       <div class="panel-pad">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
           <div style="max-width:620px"><div class="strong">Clear all demo / sample data</div>
             <div class="muted" style="font-size:13px;margin-top:3px">Removes every buyer, purchase order, material line, shipment, daily-production entry, inventory item, cheque record and the Recycle Bin — leaving an empty workspace for your real data. <b>User accounts and production lines are kept.</b> This cannot be undone, so export anything you need first.</div></div>
           <button class="btn danger" onclick="clearAllData()">Clear all data</button>
         </div>
-      </div></div>
+      </div></div>`:""}
 
     <div class="panel"><div class="panel-head"><h3>Restore sample data</h3></div>
       <div class="panel-pad">
@@ -2566,7 +2566,7 @@ async function toggleStaffDelete(){
   await save(); VIEWS.settings(); toast("Setting saved","ok");
 }
 function clearAllData(){
-  if(!isAdmin()) return;
+  if(!isSuperAdmin()){ toast("Super administrator only","warn"); return; }
   confirmModal("Clear all data","Delete every order, buyer, supplier, inventory item, production entry, shipment and cheque, leaving an empty workspace? User accounts and production lines are kept. This cannot be undone.",async()=>{
     DB.buyers=[]; DB.suppliers=[]; DB.pos=[]; DB.bom=[]; DB.shipments=[];
     DB.daily=[]; DB.inventory=[]; DB.cheques=[]; DB.trash=[]; DB.subcontract=[]; DB.subCut={}; DB.finishedGoods=[]; DB.fgSales=[];
