@@ -1955,7 +1955,9 @@ function editDaily(id){
         <label class="fld"><span class="lab">Production line *</span><select id="d_line">${lineOptions}</select></label>
         <label class="fld"><span class="lab">Date *</span><input id="d_date" type="date" value="${e?e.date:today()}"></label>
       </div>
-      <label class="fld"><span class="lab">Purchase order *</span><select id="d_po"><option value="">— select PO —</option>${poOptions}</select></label>
+      <label class="fld"><span class="lab">Purchase order *</span>
+        <input id="d_posearch" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
+        <select id="d_po"><option value="">— select PO —</option>${poOptions}</select></label>
       <div id="d_poinfo" class="notice" style="display:none;margin-top:0"></div>
       <div class="row2">
         <label class="fld"><span class="lab">Quantity made today *</span><input id="d_qty" type="number" min="0" value="${e?e.qty:""}" placeholder="pieces"></label>
@@ -1982,7 +1984,20 @@ function editDaily(id){
     const po=poByNumber(poSel.value);
     $("#d_income").textContent=cmMoney(q*cm, po?po.currency:"USD");
   }
-  poSel.onchange=refreshPO; $("#d_qty").oninput=recalc; $("#d_cm").oninput=recalc;
+  poSel.onchange=()=>{ poSel.size=1; refreshPO(); };
+  // searchable PO picker — rebuild the option list as the user types
+  const dPoSearch=$("#d_posearch");
+  if(dPoSearch){
+    dPoSearch.oninput=()=>{
+      const q=dPoSearch.value.trim().toLowerCase();
+      const cur=poSel.value;
+      const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+      poSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+      poSel.size = q && matches.length ? Math.min(8, matches.length+1) : 1;
+    };
+    dPoSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(poSel.options).filter(o=>o.value); if(opts.length===1){ poSel.value=opts[0].value; poSel.size=1; refreshPO(); } } };
+  }
+  $("#d_qty").oninput=recalc; $("#d_cm").oninput=recalc;
   refreshPO();
   $("#d_save").onclick=async()=>{
     const lineId=$("#d_line").value, date=$("#d_date").value, poId=poSel.value;
