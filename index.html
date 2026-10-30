@@ -1691,14 +1691,19 @@ async function setMatStatus(id,val){
 /* ---------- PRODUCTION ---------- */
 VIEWS.production=function(){
   setHead("Operations","Production Stages");
-  let active=DB.pos.filter(p=>!["Draft","Completed"].includes(p.status));
-  if(!active.length){ return emptyState("Nothing in production","Confirm a purchase order to start tracking its production stages.","go('pos')","Open orders"); }
+  const notDraft=DB.pos.filter(p=>p.status!=="Draft");
+  if(!notDraft.length){ return emptyState("Nothing in production","Confirm a purchase order to start tracking its production stages.","go('pos')","Open orders"); }
+  const doneCount=notDraft.filter(p=>p.status==="Completed").length;
   const pq=(PROD_SEARCH||"").trim().toLowerCase();
+  let active=notDraft.slice();
+  // Completed orders are hidden by default, but a search or the toggle reveals them
+  if(!pq && !PROD_SHOW_DONE) active=active.filter(p=>p.status!=="Completed");
   if(pq) active=active.filter(p=>((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+buyerName(p.buyerId)).toLowerCase().includes(pq));
   const searchBar=`<div class="toolbar">
       <input id="prodSearch" placeholder="Search PO or style…" value="${esc(PROD_SEARCH)}" style="flex:1;min-width:150px;max-width:320px">
       ${pq?`<button class="btn sm" id="prodSearchClear">Clear</button>`:""}
-      <span class="muted" style="font-size:12.5px;margin-left:auto">${active.length} order${active.length===1?"":"s"} in production${pq?" · matching “"+esc(PROD_SEARCH)+"”":""}</span>
+      ${doneCount?`<label class="muted" style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="prodShowDone" ${PROD_SHOW_DONE?"checked":""}> Show completed (${doneCount})</label>`:""}
+      <span class="muted" style="font-size:12.5px;margin-left:auto">${active.length} order${active.length===1?"":"s"}${pq?" · matching “"+esc(PROD_SEARCH)+"”":(PROD_SHOW_DONE?" · incl. completed":" in production")}</span>
     </div>`;
   const cards = active.length ? active.map(p=>{
     const pp=productionProgress(p); const target=Number(p.quantity||0);
@@ -1725,8 +1730,9 @@ VIEWS.production=function(){
   $("#view").innerHTML = searchBar + cards;
   const pse=$("#prodSearch"); if(pse) pse.oninput=e=>{ PROD_SEARCH=e.target.value; const v=e.target.value; VIEWS.production(); const n=$("#prodSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const psc=$("#prodSearchClear"); if(psc) psc.onclick=()=>{ PROD_SEARCH=""; VIEWS.production(); };
+  const psd=$("#prodShowDone"); if(psd) psd.onchange=e=>{ PROD_SHOW_DONE=e.target.checked; VIEWS.production(); };
 };
-let PROD_SEARCH="";
+let PROD_SEARCH="", PROD_SHOW_DONE=false;
 async function setStage(poId,stage,val){
   const p=DB.pos.find(x=>x.id===poId); if(!p) return;
   if(!p.production) p.production={};
@@ -1883,6 +1889,21 @@ VIEWS.daily=function(){
   allMonth.forEach(e=>{ const k=e.poId; if(!byPo[k]) byPo[k]={qty:0,cm:0}; byPo[k].qty+=Number(e.qty||0); byPo[k].cm+=dailyIncome(e); });
   const poSummary=Object.entries(byPo).map(([pid,v])=>{ const po=poByNumber(pid); return `<div class="stat-line"><span>${po?`<span class="linklike" onclick="openPO('${pid}')">${esc(po.poNumber+" · "+po.garment)}</span>`:"—"}</span><span class="strong">${num(v.qty)} pcs · ${cmMoney(v.cm)}</span></div>`; }).join("") || `<div class="muted" style="font-size:13px">No entries yet.</div>`;
 
+  // production progress by PO — made vs order qty vs balance, follows the filter above
+  const dLineFilt = DAILY_FILTER.line!=="All" ? DAILY_FILTER.line : null;
+  const madeFor = pid => DB.daily.filter(e=>e.poId===pid && (!dLineFilt || e.lineId===dLineFilt)).reduce((a,e)=>a+Number(e.qty||0),0);
+  const dProgPoIds = Array.from(new Set(rows.map(e=>e.poId)));
+  const dPoProgress = dProgPoIds.map(pid=>{
+    const po=poByNumber(pid); const made=madeFor(pid);
+    const target=Number(po?po.quantity:0)||0; const bal=target-made;
+    const pct=target>0?Math.min(100,Math.round(made/target*100)):0;
+    const label=po?esc(po.poNumber+" · "+(po.style||po.garment)):"—";
+    return `<div style="margin-bottom:10px">
+      <div class="stat-line" style="border:none;padding:2px 0"><span>${po?`<span class="linklike" onclick="openPO('${pid}')">${label}</span>`:label}</span>
+        <span class="strong">${num(made)} / ${target?num(target):"—"} made${target?` · bal ${num(bal)}`:""}</span></div>
+      ${target>0?`<div style="height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden"><div style="height:100%;width:${pct}%;background:${bal<0?'var(--danger,#d9534f)':'var(--accent,#2e7d6b)'}"></div></div>`:""}</div>`;
+  }).join("") || `<div class="muted" style="font-size:13px">No production ${dq?"matching this search":"in this period"}${dLineFilt?" on this line":""}.</div>`;
+
   const lineTabs = `<div class="fp ${DAILY_FILTER.line==="All"?"on":""}" data-l="All">All lines</div>`+
     DB.lines.map(l=>`<div class="fp ${DAILY_FILTER.line===l.id?"on":""}" data-l="${l.id}">${esc(l.name)}</div>`).join("");
 
@@ -1907,10 +1928,14 @@ VIEWS.daily=function(){
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
-    <div class="panel"><div class="panel-head"><h3>Month summary by order</h3><div class="meta">${DAILY_FILTER.month}</div></div>
-      <div class="panel-pad">${poSummary}
-        <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthCM)}</span></div>
-      </div></div>`;
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Month summary by order</h3><div class="meta">${DAILY_FILTER.month}</div></div>
+        <div class="panel-pad">${poSummary}
+          <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthCM)}</span></div>
+        </div></div>
+      <div class="panel"><div class="panel-head"><h3>Production progress by PO</h3><div class="meta">made vs balance · ${dLineFilt?esc(lineName(DAILY_FILTER.line)):"all lines"} · ${dq?"“"+esc(DAILY_FILTER.q)+"”":DAILY_FILTER.month}</div></div>
+        <div class="panel-pad">${dPoProgress}</div></div>
+    </div>`;
   $("#dmonth").onchange=e=>{ DAILY_FILTER.month=e.target.value; VIEWS.daily(); };
   $$(".fp").forEach(f=> f.onclick=()=>{ DAILY_FILTER.line=f.dataset.l; VIEWS.daily(); });
   const dse=$("#dSearch"); if(dse) dse.oninput=e=>{ DAILY_FILTER.q=e.target.value; const v=e.target.value; VIEWS.daily(); const n=$("#dSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
@@ -2161,7 +2186,9 @@ function editSub(id){
         <label class="fld"><span class="lab">Production date *</span><input id="s_date" type="date" value="${e?e.date:today()}"></label>
       </div>
       <div class="row2">
-        <label class="fld"><span class="lab">Purchase order *</span><select id="s_po"><option value="">— select PO —</option>${poOptions}</select></label>
+        <label class="fld"><span class="lab">Purchase order *</span>
+          <input id="s_posearch" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
+          <select id="s_po"><option value="">— select PO —</option>${poOptions}</select></label>
         <label class="fld"><span class="lab">Style</span><input id="s_style" value="${e?esc(e.style||""):""}" placeholder="auto from PO"></label>
       </div>
       <div style="margin:-4px 0 2px;font-size:12.5px">
@@ -2222,7 +2249,19 @@ function editSub(id){
       balBox.innerHTML=`<b>Total out:</b> ${num(totalOut)} pcs &nbsp;·&nbsp; <b>Balance:</b> <span style="color:${bal<0?'#c0392b':'inherit'}">${num(bal)} pcs</span>${cut?` &nbsp;·&nbsp; <b>Cut:</b> ${num(cut)}`:""}${bal<0?" &nbsp;⚠ over cut qty":""}`;
     } else balBox.style.display="none";
   }
-  poSel.onchange=refreshPO;
+  poSel.onchange=()=>{ poSel.size=1; refreshPO(); };
+  // searchable PO picker — rebuild the option list as the user types
+  const poSearch=$("#s_posearch");
+  if(poSearch){
+    poSearch.oninput=()=>{
+      const q=poSearch.value.trim().toLowerCase();
+      const cur=poSel.value;
+      const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+      poSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+      poSel.size = q && matches.length ? Math.min(8, matches.length+1) : 1;
+    };
+    poSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(poSel.options).filter(o=>o.value); if(opts.length===1){ poSel.value=opts[0].value; poSel.size=1; refreshPO(); } } };
+  }
   ["s_qty","s_cm","s_adj","s_chg","s_cut"].forEach(i=>$("#"+i).oninput=recalc);
   refreshPO();
   $("#s_save").onclick=async()=>{
@@ -3115,12 +3154,20 @@ async function commitInvImport(){
   toast(`Imported ${d.rows.length} items (${d.newCount} new, ${d.updCount} updated)`+(supAdded?` · ${supAdded} supplier(s) added`:""),"ok");
 }
 
+/* next unique inventory code — ITM-0001, 0002 … skipping any that already exist */
+function nextInvCode(){
+  const codes=new Set((DB.inventory||[]).map(i=>(i.code||"").trim().toLowerCase()).filter(Boolean));
+  const nums=(DB.inventory||[]).map(i=>{ const m=(i.code||"").match(/(\d+)\s*$/); return m?Number(m[1]):0; });
+  let n=(nums.length?Math.max(...nums):0)+1, code;
+  do{ code="ITM-"+String(n).padStart(4,"0"); n++; }while(codes.has(code.toLowerCase()));
+  return code;
+}
 function editInv(id){
-  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today()};
+  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today(),code:nextInvCode()};
   openModal({title:id?"Edit inventory item":"New inventory item (GRN)", wide:true, record:r, submitLabel:id?"Save item":"Add item",
     fields:[
       {name:"grn",label:"GRN number",half:true,placeholder:"goods received note no.",list:invDistinct("grn")},
-      {name:"code",label:"Code",half:true,placeholder:"e.g. SCF0001 / TRM-001",list:invDistinct("code")},
+      {name:"code",label:"Code (auto)",half:true,placeholder:"auto-generated — unique",list:invDistinct("code")},
       {name:"item",label:"Item name",required:true,list:invDistinct("item")},
       {name:"color",label:"Colour / spec",half:true,list:invDistinct("color")},
       {name:"supplier",label:"Supplier",half:true,list:invDistinct("supplier")},
@@ -3141,6 +3188,11 @@ function editInv(id){
       d.received=Math.max(0,Number(d.received||0)); d.issued=Math.max(0,Number(d.issued||0));
       d.adjust=Number(d.adjust||0); d.unitPrice=Number(d.unitPrice||0); d.reorder=Number(d.reorder||0);
       if(d.received-d.issued-d.adjust < -0.0001){ toast("That leaves a negative balance — check issued / adjustment","warn"); return; }
+      // code must be unique; auto-generate if left blank
+      let codeVal=(d.code||"").trim();
+      if(!codeVal){ codeVal=nextInvCode(); }
+      if(DB.inventory.some(x=>x.id!==(id||null) && (x.code||"").trim().toLowerCase()===codeVal.toLowerCase())){ toast("Code “"+codeVal+"” already exists — use a unique code","warn"); return; }
+      d.code=codeVal;
       if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
       syncSuppliersFromInventory();
       logAct(id?"Edited inventory item":"Added inventory item","Inventory", (d.code?d.code+" · ":"")+(d.item||""));
@@ -3299,10 +3351,18 @@ function sizeBreakdownHTML(p){
 /* ============================================================
    WIP REPORT  (work in progress across production stages)
    ============================================================ */
+const WIP_FILTER={status:"All",buyer:"All",q:""};
 VIEWS.wip=function(){
   setHead("Operations","WIP Report",`<button class="btn no-print" onclick="window.print()">🖨 Print / PDF</button>`);
-  const rows = DB.pos.filter(p=>p.status!=="Draft");
-  if(!rows.length){ return emptyState("Nothing in progress","Confirm an order to see work-in-progress across cutting, sewing, finishing, QC and packing.","go('pos')","Open orders"); }
+  const base = DB.pos.filter(p=>p.status!=="Draft");
+  if(!base.length){ return emptyState("Nothing in progress","Confirm an order to see work-in-progress across cutting, sewing, finishing, QC and packing.","go('pos')","Open orders"); }
+  const statuses=Array.from(new Set(base.map(p=>p.status))).filter(Boolean);
+  const wq=(WIP_FILTER.q||"").trim().toLowerCase();
+  let rows=base.slice();
+  if(WIP_FILTER.status!=="All") rows=rows.filter(p=>p.status===WIP_FILTER.status);
+  if(WIP_FILTER.buyer!=="All") rows=rows.filter(p=>p.buyerId===WIP_FILTER.buyer);
+  if(wq) rows=rows.filter(p=>((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(wq));
+  const anyFilter = WIP_FILTER.status!=="All"||WIP_FILTER.buyer!=="All"||!!wq;
 
   // totals
   const T={order:0,Cutting:0,Sewing:0,Finishing:0,"Quality Check":0,Packing:0,shipped:0};
@@ -3327,7 +3387,7 @@ VIEWS.wip=function(){
       <td class="num strong">${num(balShip)}</td>
       <td class="num"><div class="bar" style="width:70px;display:inline-block"><i style="width:${pct}%"></i></div> ${pct}%</td>
     </tr>`;
-  }).join("");
+  }).join("") || `<tr><td colspan="13" class="muted" style="text-align:center;padding:26px">No orders match the filter.</td></tr>`;
   const tWipFloor=Math.max(0,T.Cutting-T.Packing), tReady=Math.max(0,T.Packing-T.shipped), tBal=Math.max(0,T.order-T.shipped);
   const foot=`<tr style="background:var(--surface-2);font-weight:700">
     <td>Totals</td><td></td><td class="num">${num(T.order)}</td>
@@ -3345,8 +3405,15 @@ VIEWS.wip=function(){
       <div class="kpi k-chalk"><div class="klab">Packed, ready</div><div class="kval">${num(tReady)}</div><div class="ksub">awaiting export</div></div>
       <div class="kpi k-green"><div class="klab">Balance to ship</div><div class="kval">${num(tBal)}</div><div class="ksub">order minus shipped</div></div>
     </div>
+    <div class="toolbar no-print">
+      <select id="wipStatus" style="max-width:175px"><option value="All">All statuses</option>${statuses.map(s=>`<option ${WIP_FILTER.status===s?"selected":""}>${esc(s)}</option>`).join("")}</select>
+      <select id="wipBuyer" style="max-width:195px"><option value="All">All buyers</option>${DB.buyers.map(b=>`<option value="${b.id}" ${WIP_FILTER.buyer===b.id?"selected":""}>${esc(b.name)}</option>`).join("")}</select>
+      <input id="wipSearch" placeholder="Search PO or style…" value="${esc(WIP_FILTER.q)}" style="flex:1;min-width:140px;max-width:260px">
+      ${anyFilter?`<button class="btn sm" id="wipClear">Clear filters</button>`:""}
+      <span class="muted" style="font-size:12.5px;margin-left:auto">${rows.length} of ${base.length} orders</span>
+    </div>
     <div class="panel">
-      <div class="panel-head"><h3>Work-in-Progress by order</h3><div class="meta">${DB.meta?.company||"Garment ERP"} · ${fmtDate(today())}</div></div>
+      <div class="panel-head"><h3>Work-in-Progress by order</h3><div class="meta">${DB.meta?.company||"Garment ERP"} · ${fmtDate(today())}${anyFilter?" · filtered":""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>PO / Style</th><th>Status</th><th class="num">Order</th><th class="num">Cut</th><th class="num">Sew</th><th class="num">Finish</th><th class="num">QC</th><th class="num">Pack</th><th class="num">Shipped</th><th class="num">WIP</th><th class="num">Ready</th><th class="num">Bal.</th><th class="num">%</th></tr></thead>
         <tbody>${body}${foot}</tbody></table></div>
@@ -3362,6 +3429,10 @@ VIEWS.wip=function(){
           Update stage outputs under <span class="linklike" onclick="go('production')">Production</span>; this report recalculates live.</div></div>
     </div>`;
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
+  const wst=$("#wipStatus"); if(wst) wst.onchange=e=>{ WIP_FILTER.status=e.target.value; VIEWS.wip(); };
+  const wby=$("#wipBuyer"); if(wby) wby.onchange=e=>{ WIP_FILTER.buyer=e.target.value; VIEWS.wip(); };
+  const wse=$("#wipSearch"); if(wse) wse.oninput=e=>{ WIP_FILTER.q=e.target.value; const v=e.target.value; VIEWS.wip(); const n=$("#wipSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
+  const wcl=$("#wipClear"); if(wcl) wcl.onclick=()=>{ WIP_FILTER.status="All"; WIP_FILTER.buyer="All"; WIP_FILTER.q=""; VIEWS.wip(); };
 };
 
 /* ============================================================
