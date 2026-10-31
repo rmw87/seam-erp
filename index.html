@@ -1262,7 +1262,7 @@ VIEWS.dashboard = function(){
       <div class="panel-pad">${svgVBars({labels:mLabels,series:[{name:"CM income",color:CH_GREEN,values:cmByM}],fmt:(v)=>cmMoney(v)})}</div></div>
   </div>`;
 
-  $("#view").innerHTML = kpis + `
+  $("#view").innerHTML = backupReminderHTML() + kpis + `
   <div class="grid2">
     <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production summary</h3><div class="meta">factory vs sub-contract · ${thisMonth()}</div>
       <div class="actions"><button class="btn sm" onclick="go('daily')">Daily production</button> <button class="btn sm" onclick="go('subcontract')">Sub contract</button></div></div>
@@ -2906,7 +2906,7 @@ VIEWS.settings=function(){
           <label class="btn" style="cursor:pointer">⬆ Restore from file<input type="file" accept="application/json,.json" style="display:none" onchange="restoreFromFile(this)"></label>
           ${isSuperAdmin()?`<button class="btn" onclick="cloudBackups()">☁ Cloud backups</button>`:""}
         </div>
-        <div class="muted" style="font-size:12px;margin-top:10px">Tip: download a backup at the end of each day — it's a single file you can re-import anytime.</div>
+        <div class="muted" style="font-size:12px;margin-top:10px">Tip: save the downloaded file into your <b>OneDrive folder</b> (e.g. OneDrive\\Seam-Backups) — OneDrive then uploads it to the cloud automatically. The dashboard reminds you once a day.</div>
       </div></div>
 
     ${isSuperAdmin()?`<div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
@@ -2919,6 +2919,13 @@ VIEWS.settings=function(){
       </div></div>`:""}`;
 };
 /* ---- manual backup: download current data, restore from a file ---- */
+function backupDoneToday(){ try{ return localStorage.getItem("seam_backup_date")===today(); }catch(e){ return false; } }
+function backupReminderHTML(){
+  if(!isAdmin() || backupDoneToday()) return "";
+  return `<div class="notice no-print" style="background:#fff6e8;border-color:#f0d9a8;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+    <span><b>⬇ Today's backup isn't saved yet.</b> Download it and keep the file in your OneDrive folder, so a copy is always safe off-site.</span>
+    <button class="btn sm primary" onclick="downloadBackup()">Download backup</button></div>`;
+}
 function downloadBackup(){
   try{
     const blob=new Blob([JSON.stringify(DB,null,0)],{type:"application/json"});
@@ -2927,7 +2934,9 @@ function downloadBackup(){
     a.download="seam-erp-backup-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".json";
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),4000);
-    toast("Backup downloaded","ok");
+    try{ localStorage.setItem("seam_backup_date", today()); }catch(e){}
+    if(ROUTE==="dashboard") VIEWS.dashboard();
+    toast("Backup downloaded — save it in your OneDrive folder","ok");
   }catch(e){ toast("Could not create the backup file","warn"); }
 }
 function restoreFromFile(input){
