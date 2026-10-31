@@ -415,15 +415,39 @@ async function rawSet(key,val){
 }
 async function storeGet(){
   if(FB_ON){
-    try{ const snap=await FB_DOC.get(); if(snap.exists){ const d=snap.data(); if(d&&d.json){ lastJSON=d.json; return JSON.parse(d.json); } } return null; }
-    catch(e){ console.error("Firestore read failed:", e); }
+    // IMPORTANT: on a Firestore read failure we THROW so the caller never
+    // mistakes a connection blip for an empty workspace and overwrites real data.
+    const snap=await FB_DOC.get();                 // network/permission errors propagate
+    if(snap.exists){
+      const d=snap.data();
+      if(d&&d.json){ lastJSON=d.json; return JSON.parse(d.json); }   // corrupt JSON throws → caller won't overwrite
+      throw new Error("Workspace document has no data — not treating as new, will not overwrite");
+    }
+    return null;                                    // document genuinely absent → brand-new workspace
   }
   const v=await rawGet(DB_KEY); if(v!=null){ try{ return JSON.parse(v); }catch(e){} } return MEM;
+}
+/* ---- automatic rolling backups (7-day weekday ring in Firestore) ---- */
+async function autoBackup(db){
+  if(!FB_ON) return;
+  try{
+    // only back up a REAL workspace — one that has user accounts (the demo seed has none),
+    // or real production activity. Never back up the demo seed or an empty state.
+    const real = (db && ((db.users&&db.users.length>0) ||
+                 (db.daily&&db.daily.length>0) || (db.subcontract&&db.subcontract.length>0)));
+    if(!real) return;
+    const now=new Date(), slot=now.getDay(), dayKey=now.toISOString().slice(0,10);
+    let mark=null; try{ mark=localStorage.getItem("seam_bk_"+slot); }catch(e){}
+    if(mark===dayKey) return;                       // this weekday slot already saved today
+    await firebase.firestore().collection("seam_erp").doc("backup_"+slot)
+      .set({json:JSON.stringify(db), updated:Date.now(), day:dayKey});
+    try{ localStorage.setItem("seam_bk_"+slot, dayKey); }catch(e){}
+  }catch(e){ console.warn("Auto-backup skipped:", e); }
 }
 async function storeSet(db){
   const s=JSON.stringify(db);
   if(FB_ON){
-    try{ await FB_DOC.set({json:s, updated:Date.now()}); lastJSON=s; PERSIST_OK=true; return; }
+    try{ await FB_DOC.set({json:s, updated:Date.now()}); lastJSON=s; PERSIST_OK=true; autoBackup(db); return; }
     catch(e){ console.error("Firestore write failed:", e); }
   }
   const ok=await rawSet(DB_KEY, s); if(!ok) MEM=db;
@@ -697,8 +721,18 @@ function defaultChequeLayout(){
    INIT
    ============================================================ */
 async function initData(){
-  DB = await storeGet();
-  if(!DB || !DB.pos){ DB = seed(); await storeSet(DB); }
+  let loaded;
+  try{ loaded = await storeGet(); }
+  catch(e){
+    // Read failed (connection/corrupt). NEVER seed over a possibly-good workspace.
+    console.error("Workspace load failed — not seeding, your data is untouched:", e);
+    const err=new Error("DB_LOAD_FAILED"); err.cause=e; throw err;
+  }
+  if(loaded==null){
+    DB = seed(); await storeSet(DB);              // only a genuinely absent document is treated as new
+  } else {
+    DB = loaded;                                   // existing workspace — use it as-is, never overwrite
+  }
   if(!DB.users) DB.users=[];
   // migrate new collections for older workspaces
   if(!DB.lines) DB.lines=[{id:uid("ln"),name:"Production Line 1"},{id:uid("ln"),name:"Production Line 2"}];
@@ -2864,23 +2898,101 @@ VIEWS.settings=function(){
     <div class="panel"><div class="panel-head"><h3>Recycle Bin</h3></div>
       <div class="panel-pad"><div class="muted" style="font-size:13px">Deleted records are retained for 30 days, then auto-removed. Open the <span class="linklike" onclick="go('trash')">Recycle Bin</span> to restore or permanently delete.</div></div></div>
 
+    <div class="panel"><div class="panel-head"><h3>Backups &amp; recovery</h3><div class="meta">keep your data safe</div></div>
+      <div class="panel-pad">
+        <div class="notice" style="margin-top:0">The system now keeps <b>automatic daily backups</b> (last 7 days) in the cloud. For extra safety, download a backup file and keep it on your computer. You can restore any backup if something goes wrong.</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
+          <button class="btn primary" onclick="downloadBackup()">⬇ Download backup (.json)</button>
+          <label class="btn" style="cursor:pointer">⬆ Restore from file<input type="file" accept="application/json,.json" style="display:none" onchange="restoreFromFile(this)"></label>
+          ${isSuperAdmin()?`<button class="btn" onclick="cloudBackups()">☁ Cloud backups</button>`:""}
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:10px">Tip: download a backup at the end of each day — it's a single file you can re-import anytime.</div>
+      </div></div>
+
     ${isSuperAdmin()?`<div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
       <div class="panel-pad">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
           <div style="max-width:620px"><div class="strong">Clear all demo / sample data</div>
-            <div class="muted" style="font-size:13px;margin-top:3px">Removes every buyer, purchase order, material line, shipment, daily-production entry, inventory item, cheque record and the Recycle Bin — leaving an empty workspace for your real data. <b>User accounts and production lines are kept.</b> This cannot be undone, so export anything you need first.</div></div>
+            <div class="muted" style="font-size:13px;margin-top:3px">Removes every buyer, purchase order, material line, shipment, daily-production entry, inventory item, cheque record and the Recycle Bin — leaving an empty workspace for your real data. <b>User accounts and production lines are kept.</b> A backup is saved first.</div></div>
           <button class="btn danger" onclick="clearAllData()">Clear all data</button>
         </div>
-      </div></div>`:""}
+      </div></div>
 
     <div class="panel"><div class="panel-head"><h3>Restore sample data</h3></div>
       <div class="panel-pad">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap">
-          <div class="muted" style="font-size:13px;max-width:620px">Puts the original demo buyers, orders, shipments and inventory back (for testing). User accounts are kept.</div>
+          <div class="muted" style="font-size:13px;max-width:620px">Replaces everything with the original demo data (for testing only). A backup is saved first.</div>
           <button class="btn" onclick="doReset()">Load sample data</button>
         </div>
-      </div></div>`;
+      </div></div>`:""}`;
 };
+/* ---- manual backup: download current data, restore from a file ---- */
+function downloadBackup(){
+  try{
+    const blob=new Blob([JSON.stringify(DB,null,0)],{type:"application/json"});
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="seam-erp-backup-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    toast("Backup downloaded","ok");
+  }catch(e){ toast("Could not create the backup file","warn"); }
+}
+function restoreFromFile(input){
+  const f=input.files&&input.files[0]; if(!f) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    let data; try{ data=JSON.parse(reader.result); }catch(e){ toast("That file isn't a valid backup","warn"); input.value=""; return; }
+    if(!data||typeof data!=="object"||!("pos" in data)){ toast("That file doesn't look like a Seam backup","warn"); input.value=""; return; }
+    const c=(data.pos||[]).length+" orders · "+(data.inventory||[]).length+" stock items · "+(data.daily||[]).length+" production entries";
+    confirmModal("Restore this backup?","This replaces the current data with the backup ("+c+"). The current data is backed up first.",async()=>{
+      try{ await autoBackup(DB); }catch(e){}
+      DB=data; await storeSet(DB); closeModal(); buildNav(); go("dashboard"); toast("Backup restored","ok");
+    });
+    input.value="";
+  };
+  reader.readAsText(f);
+}
+/* ---- cloud backups: list the automatic Firestore backups and restore one ---- */
+async function cloudBackups(){
+  if(!isSuperAdmin()){ toast("Super administrator only","warn"); return; }
+  if(typeof firebase==="undefined"||!FB_ON){ toast("Cloud backups need the shared database","warn"); return; }
+  toast("Loading cloud backups…","ok");
+  const ids=["backup_0","backup_1","backup_2","backup_3","backup_4","backup_5","backup_6","backup_before_reset"];
+  const rows=[];
+  for(const id of ids){
+    try{
+      const snap=await firebase.firestore().collection("seam_erp").doc(id).get();
+      if(snap.exists){ const d=snap.data(); if(d&&d.json){ let db=null; try{ db=JSON.parse(d.json); }catch(e){}
+        if(db) rows.push({id, updated:d.updated||0, pos:(db.pos||[]).length, inv:(db.inventory||[]).length, daily:(db.daily||[]).length, bytes:d.json.length}); } }
+    }catch(e){}
+  }
+  rows.sort((a,b)=>b.updated-a.updated);
+  const body=rows.length?rows.map(r=>`<tr>
+    <td class="num" style="white-space:nowrap;font-size:12.5px">${r.updated?fmtTs(r.updated):"—"}</td>
+    <td class="num">${num(r.pos)}</td><td class="num">${num(r.inv)}</td><td class="num">${num(r.daily)}</td>
+    <td class="num"><button class="btn sm primary" onclick="restoreCloud('${r.id}')">Restore</button></td></tr>`).join("")
+    : `<tr><td colspan="5" class="muted" style="text-align:center;padding:20px">No cloud backups yet. They start building up as you use the app.</td></tr>`;
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Cloud backups</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><div class="notice" style="margin-top:0">Automatic daily snapshots. Pick one to restore — your current data is backed up first.</div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Saved</th><th class="num">Orders</th><th class="num">Stock</th><th class="num">Production</th><th></th></tr></thead><tbody>${body}</tbody></table></div></div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button></div>`;
+  $("#scrim").classList.add("open"); $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+}
+async function restoreCloud(id){
+  if(!isSuperAdmin()) return;
+  try{
+    const snap=await firebase.firestore().collection("seam_erp").doc(id).get();
+    if(!snap.exists){ toast("That backup is gone","warn"); return; }
+    const d=snap.data(); const db=JSON.parse(d.json);
+    const c=(db.pos||[]).length+" orders · "+(db.inventory||[]).length+" stock items";
+    confirmModal("Restore this backup?","Replaces current data with the snapshot ("+c+"). Current data is backed up first.",async()=>{
+      try{ await autoBackup(DB); }catch(e){}
+      DB=db; await storeSet(DB); closeModal(); buildNav(); go("dashboard"); toast("Cloud backup restored","ok");
+    });
+  }catch(e){ toast("Could not read that backup","warn"); }
+}
 async function toggleStaffDelete(){
   if(!DB.settings) DB.settings={};
   DB.settings.allowStaffDelete=!DB.settings.allowStaffDelete;
@@ -5078,18 +5190,29 @@ function disable2FA(){
 
 /* ---------- reset (admin) ---------- */
 function doReset(){
-  if(!isAdmin()) return;
-  confirmModal("Reset demo data","This restores the sample buyers, orders and shipments. User accounts are kept.",async()=>{
+  if(!isSuperAdmin()){ toast("Super administrator only","warn"); return; }
+  confirmModal("Replace ALL data with demo samples","This DELETES your current buyers, orders, inventory and production and replaces them with sample data. A backup is saved first. Only do this on a fresh demo.",async()=>{
+    try{ await autoBackup(DB); await firebase.firestore().collection("seam_erp").doc("backup_before_reset").set({json:JSON.stringify(DB),updated:Date.now()}); }catch(e){}
     const users=DB.users; DB=seed(); DB.users=users; await storeSet(DB);
-    closeModal(); buildNav(); go("dashboard"); toast("Demo data reset","ok");
+    closeModal(); buildNav(); go("dashboard"); toast("Demo data loaded (previous data backed up)","ok");
   });
 }
 
 /* boot */
 setupDropzone();
+function showLoadError(){
+  const el=document.getElementById("app")||document.body;
+  el.innerHTML=`<div style="max-width:460px;margin:12vh auto;padding:28px;font-family:system-ui,sans-serif;text-align:center">
+    <div style="font-size:40px">⚠️</div>
+    <h2 style="margin:10px 0 6px;color:#15213B">Couldn't load your data</h2>
+    <p style="color:#5C6779;line-height:1.6;font-size:14.5px">There was a connection problem reaching the shared database. <b>Your data is safe — nothing was changed.</b> Check your internet connection and try again.</p>
+    <button onclick="location.reload()" style="margin-top:14px;padding:10px 22px;font-size:15px;border:0;border-radius:8px;background:#2B4A7E;color:#fff;cursor:pointer">Retry</button>
+  </div>`;
+}
 (async function boot(){
   initFirebase();
-  await initData();
+  try{ await initData(); }
+  catch(e){ showLoadError(); return; }   // load failed → never write, offer retry; data stays intact
   const s=await sessionGet();
   if(s&&s.userId){ const u=DB.users.find(x=>x.id===s.userId&&x.active); if(u) CURRENT=u; }
   if(CURRENT) enterApp();
