@@ -874,6 +874,7 @@ const NAV = [
   ]},
   {grp:"Procurement", items:[
     {id:"inventory",ico:"❒",label:"Inventory"},
+    {id:"materials",ico:"❑",label:"Materials Planning"},
     {id:"suppliers",ico:"◎",label:"Suppliers"},
   ]},
   {grp:"Operations", items:[
@@ -913,7 +914,7 @@ function navBadge(id){
   return null;
 }
 /* which operational tabs a staff user may see (admins see all). undefined = all */
-const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","suppliers","daily","subcontract","production","wip","export","finished","cheque"];
+const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","finished","cheque"];
 const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
@@ -1279,7 +1280,7 @@ function buildAlerts(){
 }
 function workflowGuide(){
   const steps=[["1","Receive buyer PO","Sales → Purchase Orders"],["2","Define Bill of Materials","Open a PO → Materials tab"],
-    ["3","Order & import raw material","Procurement → Raw Material & Import"],["4","Run production stages","Operations → Production"],
+    ["3","Order & import raw material","Procurement → Materials Planning"],["4","Run production stages","Operations → Production"],
     ["5","Export to buyer","Operations → Export & Shipment"]];
   return steps.map(s=>`<div class="stat-line"><span><b style="color:var(--denim)">${s[0]}.</b> ${s[1]}</span><span class="muted" style="font-size:12px">${s[2]}</span></div>`).join("");
 }
@@ -1690,7 +1691,7 @@ function editBOM(poId,id){
 
 /* ---------- RAW MATERIAL & IMPORT ---------- */
 VIEWS.materials=function(){
-  setHead("Procurement","Raw Material & Import");
+  setHead("Procurement","Materials Planning");
   const tabs=["All"].concat(MAT_STATUS);
   let rows = DB.bom.map(m=>({...m, po:poByNumber(m.poId)}));
   if(FILTERS.mat!=="All") rows=rows.filter(m=>m.status===FILTERS.mat);
@@ -4590,7 +4591,7 @@ function userEntriesModal(username){
 /* ---- Feature visibility (super admin controls what everyone else sees) ---- */
 function superVisibilityHTML(){
   const tv=(DB.featureVis&&DB.featureVis.tabs)||{}, av=(DB.featureVis&&DB.featureVis.actions)||{};
-  const tabList=["dashboard","pos","buyers","inventory","suppliers","daily","subcontract","production","wip","export","finished","cheque","users","trash","settings"];
+  const tabList=["dashboard","pos","buyers","inventory","materials","suppliers","daily","subcontract","production","wip","export","finished","cheque","users","trash","settings"];
   const tabRow=t=>{ const on=tv[t]!==false; return `<label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px">
     <input type="checkbox" ${on?"checked":""} onchange="toggleFeatureTab('${t}',this.checked)"> <span style="flex:1">${esc(tabLabel(t))}</span>
     <span class="muted" style="font-size:11.5px">${on?"shown":"hidden"}</span></label>`; };
