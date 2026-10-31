@@ -552,6 +552,28 @@ function poPriceSet(po){ return [...new Set(poLines(po).map(l=>Number(l.price)).
 function poHasMultiPrice(po){ return poLines(po).length>1 && poPriceSet(po).length>1; }
 function poBody(po){ if(po.body) return po.body; const m=(po.notes||"").match(/Body#\s*([A-Za-z0-9\-]+)/i); return m?m[1]:""; }
 function bomFor(poId){ return DB.bom.filter(m=>m.poId===poId); }
+/* match an issued inventory line to a BOM line by material name + colour */
+function issueMatchesBom(line, m){
+  const norm=s=>(s||"").toString().trim().toLowerCase();
+  const li=norm(line.item), mm=norm(m.material);
+  if(!li||!mm) return false;
+  if(!(li===mm || li.includes(mm) || mm.includes(li))) return false;
+  const lc=norm(line.color), mc=norm(m.color);
+  if(lc && mc && lc!=="—" && mc!=="—") return lc===mc || lc.includes(mc) || mc.includes(lc);
+  return true;
+}
+/* qty issued to a PO that maps to a given BOM line (computed from issue notes) */
+function bomIssuedQty(poId, m){
+  let q=0;
+  (DB.issues||[]).filter(n=>n.poId===poId).forEach(n=>(n.lines||[]).forEach(l=>{ if(issueMatchesBom(l,m)) q+=Number(l.qty||0); }));
+  return q;
+}
+/* every issued line booked against a PO, newest first (for the consumption log) */
+function poIssuedLines(poId){
+  const out=[];
+  (DB.issues||[]).filter(n=>n.poId===poId).forEach(n=>(n.lines||[]).forEach(l=>out.push({date:n.date,noteNo:n.noteNo,to:n.to,...l})));
+  return out.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
+}
 function materialProgress(poId){
   const items=bomFor(poId); if(!items.length) return {pct:0,done:0,total:0};
   const done=items.filter(m=>m.status==="Received").length;
@@ -1454,14 +1476,33 @@ function openPO(id){
   ROUTE="pos"; buildNav();
   setHead("Purchase Order", p.poNumber, `<button class="btn" onclick="go('pos')">← All orders</button> <button class="btn" onclick="editPO('${p.id}')">Edit PO</button>`);
   const mp=materialProgress(p.id), pp=productionProgress(p), shipped=shippedQty(p.id);
-  const matRows = bomFor(p.id).map(m=>`
-    <tr><td class="strong">${esc(m.material)}</td><td>${esc(m.type)}</td>
-      <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
+  const matRows = bomFor(p.id).map(m=>{
+    const req=Number(m.totalQty||0), iss=bomIssuedQty(p.id,m), bal=req-iss;
+    return `<tr><td class="strong">${esc(m.material)}</td><td>${esc(m.type)}</td>
+      <td class="num">${num(req)} ${esc(m.unit)}</td>
+      <td class="num">${num(iss)}</td>
+      <td class="num strong" style="${bal<0?'color:var(--red)':''}">${num(bal)}</td>
       <td>${esc(supplierName(m.supplierId))}</td>
       <td>${pill(m.status,matPill(m.status))}</td>
       <td class="num">${m.eta?fmtDate(m.eta):"—"}</td>
-      <td class="num"><button class="btn sm" onclick="editBOM('${p.id}','${m.id}')">Edit</button></td></tr>`).join("")
-    || `<tr><td colspan="7" class="muted" style="text-align:center;padding:24px">No materials defined. Build the bill of materials to start procurement.</td></tr>`;
+      <td class="num"><button class="btn sm" onclick="editBOM('${p.id}','${m.id}')">Edit</button></td></tr>`;}).join("")
+    || `<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">No materials defined. Build the bill of materials to start procurement.</td></tr>`;
+
+  // materials actually issued (consumed) against this PO
+  const issuedLines=poIssuedLines(p.id);
+  const issuedRows=issuedLines.map(l=>{
+    const matched=bomFor(p.id).some(m=>issueMatchesBom(l,m));
+    return `<tr><td class="num">${l.date?fmtDate(l.date):"—"}</td>
+      <td class="mono">${esc(l.noteNo||"—")}</td>
+      <td class="mono">${esc(l.code||"—")}</td>
+      <td><div class="strong">${esc(l.item||"—")}</div>${l.color&&l.color!=="—"?`<div class="muted" style="font-size:12px">${esc(l.color)}</div>`:""}</td>
+      <td class="num strong">${num(l.qty)} <span class="muted" style="font-weight:400">${esc(l.unit||"")}</span></td>
+      <td>${matched?pill("matched","p-teal"):pill("no BOM line","p-grey")}</td></tr>`;}).join("");
+  const issuedPanel = issuedLines.length? `
+  <div class="panel"><div class="panel-head"><h3>Materials issued to this PO</h3><div class="meta">${issuedLines.length} issue line${issuedLines.length===1?"":"s"} · from Fabric Issue notes</div></div>
+    <div class="panel-body" style="overflow-x:auto"><table>
+      <thead><tr><th class="num">Date</th><th>Note No</th><th>Code</th><th>Item</th><th class="num">Issued</th><th>Match</th></tr></thead>
+      <tbody>${issuedRows}</tbody></table></div></div>` : "";
 
   const seam = seamHTML(p);
 
@@ -1478,11 +1519,13 @@ function openPO(id){
     <div class="panel-pad">${seam}</div></div>
 
   <div class="panel">
-    <div class="panel-head"><h3>Bill of Materials</h3><div class="meta">raw material required for this order</div>
+    <div class="panel-head"><h3>Bill of Materials</h3><div class="meta">required vs issued from stock</div>
       <div class="actions"><button class="btn sm primary" onclick="editBOM('${p.id}')">+ Add material</button></div></div>
-    <div class="panel-body"><table>
-      <thead><tr><th>Material</th><th>Type</th><th class="num">Required</th><th>Supplier</th><th>Status</th><th class="num">ETA</th><th></th></tr></thead>
+    <div class="panel-body" style="overflow-x:auto"><table>
+      <thead><tr><th>Material</th><th>Type</th><th class="num">Required</th><th class="num">Issued</th><th class="num">Balance</th><th>Supplier</th><th>Status</th><th class="num">ETA</th><th></th></tr></thead>
       <tbody>${matRows}</tbody></table></div></div>
+
+  ${issuedPanel}
 
   ${poPriceBreakdownHTML(p)}
 
@@ -3368,6 +3411,7 @@ function openIssueNote(){
   const labelOf=i=>(i.code?i.code+" · ":"")+i.item+(i.color&&i.color!=="—"?" · "+i.color:"")+"  (bal "+num(invBalance(i))+" "+(i.unit||"")+")";
   const labelToId={}; items.forEach(i=>{ labelToId[labelOf(i)]=i.id; });
   const dlOpts=items.map(i=>`<option value="${esc(labelOf(i))}">`).join("");
+  const poOptions=DB.pos.map(p=>`<option value="${p.id}">${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
   ISSUE_LINES=[{itemId:"",qty:""}];
   const render=()=>{
     const lineRows=ISSUE_LINES.map((ln,idx)=>{
@@ -3405,6 +3449,10 @@ function openIssueNote(){
         <label class="fld"><span class="lab">Date *</span><input id="iss_date" type="date" value="${today()}"></label>
         <label class="fld"><span class="lab">Issued to / dept</span><input id="iss_to" placeholder="e.g. Cutting"></label>
       </div>
+      <label class="fld"><span class="lab">For PO — updates that order's Bill of Materials</span>
+        <input id="iss_posearch" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
+        <select id="iss_po"><option value="">— no PO / general issue —</option>${poOptions}</select></label>
+      <div id="iss_poinfo" class="notice" style="display:none;margin-top:0"></div>
       <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:6px 0">Items to issue</div>
       <datalist id="issDL">${dlOpts}</datalist>
       <div id="issLines"></div>
@@ -3420,12 +3468,35 @@ function openIssueNote(){
   $("#scrim").classList.add("open");
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
   render();
+  // searchable PO picker + show the selected PO's bill of materials
+  const poSel=$("#iss_po"), poSearch=$("#iss_posearch"), poInfo=$("#iss_poinfo");
+  function showPoBom(){
+    const po=poByNumber(poSel.value);
+    if(po){ const bom=bomFor(po.id);
+      poInfo.style.display="block";
+      poInfo.innerHTML = bom.length
+        ? `<b>${esc(po.poNumber)}</b> bill of materials — Required / Issued / Balance updates as you issue:<div style="margin-top:5px;font-size:12.5px">${bom.map(m=>{const req=Number(m.totalQty||0),iss=bomIssuedQty(po.id,m),bal=req-iss;return `• ${esc(m.material)}${m.color?" ("+esc(m.color)+")":""}: ${num(req)} req · ${num(iss)} issued · <b style="color:${bal<0?'var(--red)':'inherit'}">${num(bal)} bal</b> ${esc(m.unit||"")}`;}).join("<br>")}</div>`
+        : `<b>${esc(po.poNumber)}</b> has no bill of materials yet — issues will still be logged against this order.`;
+    } else poInfo.style.display="none";
+  }
+  if(poSel) poSel.onchange=showPoBom;
+  if(poSearch){
+    poSearch.oninput=()=>{
+      const q=poSearch.value.trim().toLowerCase(); const cur=poSel.value;
+      const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+      poSel.innerHTML=`<option value="">— no PO / general issue —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+      poSel.size = q && matches.length ? Math.min(8, matches.length+1) : 1;
+    };
+    poSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(poSel.options).filter(o=>o.value); if(opts.length===1){ poSel.value=opts[0].value; poSel.size=1; showPoBom(); } } };
+    poSel.addEventListener("change",()=>{ poSel.size=1; });
+  }
   $("#iss_add").onclick=()=>{ ISSUE_LINES.push({itemId:"",qty:""}); render(); };
   $("#iss_save").onclick=commitIssueNote;
 }
 let ISSUE_LINES=[];
 async function commitIssueNote(){
   const noteNo=$("#iss_no").value.trim(), date=$("#iss_date").value, to=$("#iss_to").value.trim(), remark=$("#iss_remark").value.trim();
+  const poId=$("#iss_po")?$("#iss_po").value:"";
   if(!noteNo||!date){ toast("Issue Note No and Date are required","warn"); return; }
   // build & validate lines
   const need={}; const lines=[];
@@ -3446,8 +3517,9 @@ async function commitIssueNote(){
   // apply: increase issued, snapshot line details
   const snap=lines.map(l=>{ const it=DB.inventory.find(x=>x.id===l.itemId); it.issued=Number(it.issued||0)+l.qty;
     return {itemId:l.itemId, code:it.code||"", item:it.item||"", color:it.color||"", unit:it.unit||"", qty:l.qty}; });
-  DB.issues.unshift({id:uid("iss"),noteNo,date,to,remark,by:CURRENT?CURRENT.username:"",createdAt:Date.now(),lines:snap});
-  logAct("Fabric issue","Inventory", "Note "+noteNo+" · "+lines.length+" line(s)");
+  const poRef=poByNumber(poId);
+  DB.issues.unshift({id:uid("iss"),noteNo,date,to,poId:poId||"",poNumber:poRef?poRef.poNumber:"",remark,by:CURRENT?CURRENT.username:"",createdAt:Date.now(),lines:snap});
+  logAct("Fabric issue","Inventory", "Note "+noteNo+(poRef?" · PO "+poRef.poNumber:"")+" · "+lines.length+" line(s)");
   await save(); closeModal(); VIEWS.inventory(); toast("Issued on note "+noteNo,"ok");
 }
 
@@ -3458,9 +3530,11 @@ VIEWS.issues=function(){
   const rows=list.map(n=>{
     const totQty=(n.lines||[]).reduce((a,l)=>a+Number(l.qty||0),0);
     const items=(n.lines||[]).map(l=>`${esc(l.item)}${l.color&&l.color!=="—"?" ("+esc(l.color)+")":""} — ${num(l.qty)} ${esc(l.unit||"")}`).join("<br>");
+    const po=n.poId?poByNumber(n.poId):null;
     return `<tr>
       <td class="mono strong">${esc(n.noteNo)}</td>
       <td class="num">${fmtDate(n.date)}</td>
+      <td>${po?`<span class="linklike" onclick="openPO('${n.poId}')">${esc(po.poNumber)}</span>`:(n.poNumber?esc(n.poNumber):"—")}</td>
       <td>${esc(n.to||"—")}</td>
       <td style="font-size:12.5px">${items}</td>
       <td class="num">${num(totQty)}</td>
@@ -3468,10 +3542,10 @@ VIEWS.issues=function(){
       <td class="num">${canDelete()?`<button class="btn sm danger" onclick="reverseIssue('${n.id}')">Reverse</button>`:""}</td></tr>`;
   }).join("");
   $("#view").innerHTML=`
-    <div class="notice">Each issue note reduced stock. <b>Reverse</b> adds the quantities back and removes the note.</div>
+    <div class="notice">Each issue note reduced stock. Issues booked against a PO update that order's <b>Bill of Materials</b> (Issued / Balance). <b>Reverse</b> adds the quantities back and removes the note.</div>
     <div class="panel"><div class="panel-head"><h3>Issue notes</h3><div class="meta">${list.length} note${list.length===1?"":"s"}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-        <thead><tr><th>Note No</th><th class="num">Date</th><th>To</th><th>Items</th><th class="num">Total qty</th><th>By</th><th></th></tr></thead>
+        <thead><tr><th>Note No</th><th class="num">Date</th><th>PO</th><th>To</th><th>Items</th><th class="num">Total qty</th><th>By</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div></div>`;
 };
 function reverseIssue(id){
