@@ -1486,7 +1486,7 @@ function openPO(id){
       <td>${esc(supplierName(m.supplierId))}</td>
       <td>${pill(m.status,matPill(m.status))}</td>
       <td class="num">${m.eta?fmtDate(m.eta):"—"}</td>
-      <td class="num"><button class="btn sm" onclick="editBOM('${p.id}','${m.id}')">Edit</button></td></tr>`;}).join("")
+      <td class="num"><button class="btn sm" onclick="editMaterial('${m.id}','${p.id}')">Edit</button></td></tr>`;}).join("")
     || `<tr><td colspan="9" class="muted" style="text-align:center;padding:24px">No materials defined. Build the bill of materials to start procurement.</td></tr>`;
 
   // materials actually issued (consumed) against this PO
@@ -1521,7 +1521,7 @@ function openPO(id){
 
   <div class="panel">
     <div class="panel-head"><h3>Bill of Materials</h3><div class="meta">required vs issued from stock</div>
-      <div class="actions"><button class="btn sm primary" onclick="editBOM('${p.id}')">+ Add material</button></div></div>
+      <div class="actions"><button class="btn sm primary" onclick="editMaterial(null,'${p.id}')">+ Add material</button></div></div>
     <div class="panel-body" style="overflow-x:auto"><table>
       <thead><tr><th>Material</th><th>Type</th><th class="num">Required</th><th class="num">Issued</th><th class="num">Balance</th><th>Supplier</th><th>Status</th><th class="num">ETA</th><th></th></tr></thead>
       <tbody>${matRows}</tbody></table></div></div>
@@ -1667,65 +1667,175 @@ function shipmentMini(poId){
   return list.map(s=>`<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(s.qty)} pcs · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`).join("");
 }
 
-/* ----- BOM editor ----- */
-function editBOM(poId,id){
-  const list=bomFor(poId); const r=id?list.find(m=>m.id===id):{unit:"pcs",status:"Required"};
-  openModal({title:id?"Edit material line":"Add material to BOM", wide:true, record:r, submitLabel:id?"Save":"Add material",
-    fields:[
-      {name:"material",label:"Material",required:true,half:true,placeholder:"Cotton Jersey 180gsm"},
-      {name:"type",label:"Type",type:"select",options:["Fabric","Thread","Trim","Packaging","Other"],half:true},
-      {name:"color",label:"Colour / spec",half:true},
-      {name:"unit",label:"Unit",type:"select",options:["pcs","kg","m","yd","cone","roll","gross","set"],half:true},
-      {name:"qtyPerGarment",label:"Qty per garment",type:"number",step:"0.001",half:true},
-      {name:"totalQty",label:"Total required",type:"number",required:true,half:true},
-      {name:"supplierId",label:"Supplier",type:"select",options:supplierOpts(),half:true},
-      {name:"unitCost",label:"Unit cost",type:"number",step:"0.01",half:true},
-      {name:"status",label:"Procurement status",type:"select",options:MAT_STATUS,half:true},
-      {name:"eta",label:"ETA",type:"date",half:true},
-    ],
-    onSubmit:async d=>{
-      if(id){ Object.assign(r,d); } else { DB.bom.push({id:uid("bom"),poId,...d}); }
-      await save(); closeModal(); openPO(poId); toast(id?"Material updated":"Material added","ok");
-    }});
+/* ----- Material / BOM editor (searchable PO + multi-currency, stored in USD) ----- */
+function editMaterial(id, presetPo){
+  const m = id ? DB.bom.find(x=>x.id===id) : null;
+  const poInit = m ? m.poId : (presetPo||"");
+  const poLocked = !!presetPo;
+  const poRef = poByNumber(poInit);
+  const supOptions = `<option value="">Unassigned</option>`+DB.suppliers.map(s=>`<option value="${s.id}" ${m&&m.supplierId===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${poInit===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  const typeOpts = ["Fabric","Thread","Trim","Packaging","Other"].map(t=>`<option ${m&&m.type===t?"selected":""}>${t}</option>`).join("");
+  const unitOpts = ["pcs","kg","m","yd","cone","roll","gross","set"].map(u=>`<option ${m&&m.unit===u?"selected":""}>${u}</option>`).join("");
+  const statusOpts = MAT_STATUS.map(s=>`<option ${(m?m.status===s:s==="Required")?"selected":""}>${s}</option>`).join("");
+  const curr0 = m ? (m.costCurr||"USD") : "USD";
+  const cost0 = m ? (m.costCurr==="LKR" ? (m.costOrig!=null?m.costOrig:"") : (m.unitCost!=null?m.unitCost:"")) : "";
+  const fx0 = m ? (m.fxRate||"") : "";
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${id?"Edit material line":"Order / add material"}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <label class="fld"><span class="lab">For PO *</span>
+        ${poLocked
+          ? `<input value="${esc((poRef?poRef.poNumber:'')+' · '+(poRef?poRef.garment:''))}" disabled><input type="hidden" id="mat_po" value="${esc(poInit)}">`
+          : `<input id="mat_posearch" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px"><select id="mat_po"><option value="">— select PO —</option>${poOptions}</select>`}
+      </label>
+      <div id="mat_poinfo" class="notice" style="display:none;margin-top:0"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Material *</span><input id="mat_material" value="${m?esc(m.material||''):''}" placeholder="Cotton Jersey 180gsm"></label>
+        <label class="fld"><span class="lab">Type</span><select id="mat_type">${typeOpts}</select></label>
+      </div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Colour / spec</span><input id="mat_color" value="${m?esc(m.color||''):''}"></label>
+        <label class="fld"><span class="lab">Supplier</span><select id="mat_sup">${supOptions}</select></label>
+      </div>
+      <div class="row3">
+        <label class="fld"><span class="lab">Qty per garment</span><input id="mat_qpg" type="number" step="0.001" min="0" value="${m&&m.qtyPerGarment!=null?m.qtyPerGarment:''}"></label>
+        <label class="fld"><span class="lab">Total required *</span><input id="mat_total" type="number" min="0" value="${m&&m.totalQty!=null?m.totalQty:''}"></label>
+        <label class="fld"><span class="lab">Unit</span><select id="mat_unit">${unitOpts}</select></label>
+      </div>
+      <div class="row3">
+        <label class="fld"><span class="lab">Invoice currency</span><select id="mat_curr"><option value="USD" ${curr0==="USD"?"selected":""}>US$ (USD)</option><option value="LKR" ${curr0==="LKR"?"selected":""}>Rupees (LKR)</option></select></label>
+        <label class="fld"><span class="lab">Unit cost (invoice currency)</span><input id="mat_cost" type="number" step="0.0001" min="0" value="${cost0}"></label>
+        <label class="fld" id="mat_fxrow"><span class="lab">Exchange rate (Rs per US$)</span><input id="mat_fx" type="number" step="0.0001" min="0" value="${fx0}" placeholder="only for LKR"></label>
+      </div>
+      <div id="mat_fxhint" class="muted" style="font-size:12px;margin-top:-4px"></div>
+      <div class="row2">
+        <label class="fld"><span class="lab">Procurement status</span><select id="mat_status">${statusOpts}</select></label>
+        <label class="fld"><span class="lab">ETA</span><input id="mat_eta" type="date" value="${m?esc(m.eta||''):''}"></label>
+      </div>
+      <div class="panel-pad" style="background:var(--surface-2);border-radius:10px;display:flex;justify-content:space-between;align-items:center">
+        <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.06em">Estimated line cost (USD)</span>
+        <span class="strong" id="mat_est" style="font-size:18px">—</span></div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="mat_save">${id?"Save":"Add material"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const poSel=$("#mat_po");
+  function showPoInfo(){
+    const po=poByNumber(poSel?poSel.value:poInit); const box=$("#mat_poinfo");
+    if(po){ box.style.display="block"; box.innerHTML=`<b>${esc(po.poNumber)}</b> · ${esc(po.style||'—')} · order ${num(po.quantity)} pcs`; }
+    else if(box) box.style.display="none";
+  }
+  const poSearch=$("#mat_posearch");
+  if(poSearch){
+    poSearch.oninput=()=>{ const q=poSearch.value.trim().toLowerCase(); const cur=poSel.value;
+      const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+      poSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+      poSel.size=q&&matches.length?Math.min(8,matches.length+1):1;
+    };
+    poSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(poSel.options).filter(o=>o.value); if(opts.length===1){ poSel.value=opts[0].value; poSel.size=1; showPoInfo(); } } };
+    poSel.addEventListener("change",()=>{ poSel.size=1; showPoInfo(); });
+  }
+  showPoInfo();
+  const curS=$("#mat_curr"), costE=$("#mat_cost"), fxE=$("#mat_fx"), fxRow=$("#mat_fxrow"), fxHint=$("#mat_fxhint"), totalE=$("#mat_total");
+  function usdUnit(){ const c=curS.value, p=Number(costE.value||0), r=Number(fxE.value||0); return (c==="LKR") ? (r>0?p/r:0) : p; }
+  function upd(){
+    const c=curS.value; if(fxRow) fxRow.style.display=c==="LKR"?"":"none";
+    const u=usdUnit(), tot=Number(totalE.value||0);
+    if(c==="LKR"){ const p=Number(costE.value||0), r=Number(fxE.value||0); fxHint.style.display=""; fxHint.innerHTML=r>0?`≈ <b>${money(u)}</b> per unit (stored in US$) · Rs ${num(p)} ÷ ${num(r)}`:`Enter the exchange rate to convert Rs ${num(p)} to US$`; }
+    else fxHint.style.display="none";
+    $("#mat_est").textContent=money(u*tot);
+  }
+  curS.onchange=upd; costE.oninput=upd; fxE.oninput=upd; totalE.oninput=upd; upd();
+  $("#mat_save").onclick=async()=>{
+    const poId=$("#mat_po").value;
+    if(!poId){ toast("Select the PO this material is for","warn"); return; }
+    const material=$("#mat_material").value.trim(); if(!material){ toast("Enter the material name","warn"); return; }
+    const totalQty=Number(totalE.value||0); if(totalQty<=0){ toast("Enter the total required quantity","warn"); return; }
+    const curr=curS.value==="LKR"?"LKR":"USD"; const costOrig=Number(costE.value||0), fx=Number(fxE.value||0);
+    let unitCost=costOrig; if(curr==="LKR"){ if(fx>0){ unitCost=costOrig/fx; } else { toast("Enter the exchange rate (Rs per US$) for an LKR cost","warn"); return; } }
+    const rec={ poId, material, type:$("#mat_type").value, color:$("#mat_color").value.trim(),
+      unit:$("#mat_unit").value, qtyPerGarment:Number($("#mat_qpg").value||0), totalQty,
+      supplierId:$("#mat_sup").value, unitCost, costCurr:curr, costOrig, fxRate:curr==="LKR"?fx:0,
+      status:$("#mat_status").value, eta:$("#mat_eta").value };
+    if(id){ Object.assign(m,rec); } else { DB.bom.push({id:uid("bom"),...rec}); }
+    const pr=poByNumber(poId);
+    logAct(id?"Edited material":"Ordered material","Materials", (pr?pr.poNumber+" · ":"")+material+" · "+num(totalQty)+" "+rec.unit);
+    await save(); closeModal();
+    if(ROUTE==="pos") openPO(poId); else VIEWS.materials();
+    toast(id?"Material updated":"Material added","ok");
+  };
 }
 
 /* ---------- RAW MATERIAL & IMPORT ---------- */
+let MAT_SEARCH="";
 VIEWS.materials=function(){
-  setHead("Procurement","Materials Planning");
+  setHead("Procurement","Materials Planning",
+    `${canExport()?`<button class="btn" onclick="exportMaterials()">⬆ Export Excel</button> `:""}<button class="btn primary" onclick="editMaterial()">+ Order material</button>`);
   const tabs=["All"].concat(MAT_STATUS);
+  const mq=(MAT_SEARCH||"").trim().toLowerCase();
   let rows = DB.bom.map(m=>({...m, po:poByNumber(m.poId)}));
   if(FILTERS.mat!=="All") rows=rows.filter(m=>m.status===FILTERS.mat);
+  if(mq) rows=rows.filter(m=>((m.material||"")+" "+(m.color||"")+" "+(m.type||"")+" "+(m.po?m.po.poNumber:"")+" "+(m.po?m.po.style:"")+" "+supplierName(m.supplierId)).toLowerCase().includes(mq));
   const totCost = DB.bom.reduce((a,m)=>a+Number(m.totalQty||0)*Number(m.unitCost||0),0);
   const received = DB.bom.filter(m=>m.status==="Received").length;
 
-  const body = rows.length?rows.map(m=>`
-    <tr><td><div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
+  const body = rows.length?rows.map(m=>{
+    const note = m.costCurr==="LKR" ? `<div class="muted" style="font-size:11px">Rs ${num(m.costOrig||0)} @ ${num(m.fxRate||0)}</div>` : "";
+    return `<tr><td><div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
       <td>${m.po?`<span class="linklike" onclick="openPO('${m.poId}')">${esc(m.po.poNumber)}</span>`:"—"}</td>
       <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
       <td>${esc(supplierName(m.supplierId))}</td>
-      <td class="num">${money(Number(m.totalQty||0)*Number(m.unitCost||0))}</td>
+      <td class="num">${money(Number(m.totalQty||0)*Number(m.unitCost||0))}${note}</td>
       <td class="num">${m.eta?fmtDate(m.eta):"—"}</td>
       <td>
         <select onchange="setMatStatus('${m.id}',this.value)" style="width:130px;padding:5px 8px;font-size:12px">
           ${MAT_STATUS.map(s=>`<option ${s===m.status?"selected":""}>${s}</option>`).join("")}
         </select></td>
-      <td class="num"><button class="btn sm" onclick="editBOM('${m.poId}','${m.id}')">Edit</button></td></tr>`).join("")
-    : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No material lines in this status.</td></tr>`;
+      <td class="num"><button class="btn sm" onclick="editMaterial('${m.id}')">Edit</button>
+        ${canDelete()?`<button class="btn sm danger" onclick="delMaterial('${m.id}')">Del</button>`:""}</td></tr>`;}).join("")
+    : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No material lines${mq?" match this search":" in this status"}.</td></tr>`;
 
   $("#view").innerHTML=`
     <div class="kpis">
       <div class="kpi"><div class="klab">Material lines</div><div class="kval">${DB.bom.length}</div><div class="ksub">across all orders</div></div>
       <div class="kpi k-chalk"><div class="klab">Received</div><div class="kval">${received}</div><div class="ksub">cleared & in store</div></div>
       <div class="kpi k-thread"><div class="klab">Open lines</div><div class="kval">${DB.bom.length-received}</div><div class="ksub">to order / in transit</div></div>
-      <div class="kpi k-green"><div class="klab">Material cost</div><div class="kval" style="font-size:22px">${money(totCost)}</div><div class="ksub">estimated landed</div></div>
+      <div class="kpi k-green"><div class="klab">Material cost</div><div class="kval" style="font-size:22px">${money(totCost)}</div><div class="ksub">estimated landed (USD)</div></div>
     </div>
-    <div class="notice">Update procurement status inline to move material through <b>Required → Ordered → In Transit → Received</b>. New material lines are added from inside each purchase order's Bill of Materials.</div>
-    <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.mat===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
-    <div class="panel"><div class="panel-body"><table>
+    <div class="notice">Plan and order every material here, against its PO. Set each line's status <b>Required → Ordered → In Transit → Received</b>. Costs in US$ or Rs — Rs is converted to US$ with the exchange rate.</div>
+    <div class="toolbar">
+      <div class="search"><span class="ico">⌕</span><input id="matq" placeholder="Search material, PO, colour, supplier…" value="${esc(MAT_SEARCH)}"></div>
+      <div class="filterpills" style="margin-left:auto">${tabs.map(t=>`<div class="fp ${FILTERS.mat===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div>
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Materials</h3><div class="meta">${rows.length} line${rows.length===1?"":"s"}${FILTERS.mat!=="All"?" · "+esc(FILTERS.mat):""}</div></div>
+      <div class="panel-body" style="overflow-x:auto"><table>
       <thead><tr><th>Material</th><th>PO</th><th class="num">Required</th><th>Supplier</th><th class="num">Est. cost</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
       <tbody>${body}</tbody></table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.mat=f.dataset.f; VIEWS.materials(); });
+  const mqe=$("#matq"); if(mqe) mqe.oninput=e=>{ MAT_SEARCH=e.target.value; const v=e.target.value; VIEWS.materials(); const n=$("#matq"); if(n){ n.focus(); n.selectionStart=n.selectionEnd=v.length; } };
 };
+function delMaterial(id){
+  const m=DB.bom.find(x=>x.id===id); if(!m) return;
+  confirmModal("Delete material line","Remove this material line from planning?",async()=>{
+    DB.bom=DB.bom.filter(x=>x.id!==id);
+    logAct("Deleted material","Materials",(m.material||"")+" · "+num(m.totalQty||0)+" "+(m.unit||""));
+    await save(); closeModal(); VIEWS.materials(); toast("Material line removed","ok");
+  });
+}
+function exportMaterials(){
+  if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
+  if(!DB.bom.length){ toast("No materials to export","warn"); return; }
+  const data=DB.bom.map(m=>{ const po=poByNumber(m.poId); return {
+    PO:po?po.poNumber:"", Style:po?po.style:"", Material:m.material||"", Type:m.type||"", Colour:m.color||"",
+    "Total required":Number(m.totalQty||0), Unit:m.unit||"", Supplier:supplierName(m.supplierId),
+    "Unit cost USD":Number(m.unitCost||0), "Invoice currency":m.costCurr||"USD", "Invoice cost":Number(m.costOrig!=null?m.costOrig:m.unitCost||0), "FX rate":Number(m.fxRate||0),
+    "Est. cost USD":Number(m.totalQty||0)*Number(m.unitCost||0), Status:m.status||"", ETA:m.eta||"" }; });
+  const ws=XLSX.utils.json_to_sheet(data); const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Materials");
+  XLSX.writeFile(wb,"Seam_Materials_"+today()+".xlsx"); toast("Exported "+data.length+" material lines","ok");
+}
 async function setMatStatus(id,val){
   const m=DB.bom.find(x=>x.id===id); if(!m) return; m.status=val; await save();
   toast("Material → "+val,"ok"); VIEWS.materials();
