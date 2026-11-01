@@ -1707,8 +1707,9 @@ function editMaterial(id, presetPo){
   const poInit = m ? m.poId : (presetPo||"");
   const poLocked = !!presetPo;
   const poRef = poByNumber(poInit);
-  const supOptions = `<option value="">Unassigned</option>`+DB.suppliers.map(s=>`<option value="${s.id}" ${m&&m.supplierId===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
+  const supOptions = `<option value="">Unassigned</option>`+DB.suppliers.map(s=>`<option value="${s.id}" ${m&&m.supplierId===s.id?"selected":""}>${esc(s.name)}</option>`).join("")+`<option value="__new__">+ Add new supplier…</option>`;
   const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${poInit===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  const omn0 = m ? (m.omn || nextOMN()) : nextOMN();
   const typeOpts = ["Fabric","Thread","Trim","Packaging","Other"].map(t=>`<option ${m&&m.type===t?"selected":""}>${t}</option>`).join("");
   const unitOpts = ["pcs","kg","m","yd","cone","roll","gross","set"].map(u=>`<option ${m&&m.unit===u?"selected":""}>${u}</option>`).join("");
   const statusOpts = MAT_STATUS.map(s=>`<option ${(m?m.status===s:s==="Required")?"selected":""}>${s}</option>`).join("");
@@ -1726,6 +1727,10 @@ function editMaterial(id, presetPo){
   $("#modal").innerHTML=`
     <div class="modal-head"><h3>${id?"Edit material line":"Order / add material"}</h3><div class="x" id="mx">×</div></div>
     <div class="modal-body">
+      <div class="notice" style="margin-top:0;display:flex;justify-content:space-between;align-items:center">
+        <span><b>Order #</b> &nbsp;<span class="mono strong">${esc(omn0)}</span></span>
+        <span class="muted" style="font-size:11.5px">auto-generated</span>
+        <input type="hidden" id="mat_omn" value="${esc(omn0)}"></div>
       <label class="fld"><span class="lab">For PO *</span>
         ${poLocked
           ? `<input value="${esc((poRef?poRef.poNumber:'')+' · '+(poRef?poRef.garment:''))}" disabled><input type="hidden" id="mat_po" value="${esc(poInit)}">`
@@ -1748,6 +1753,11 @@ function editMaterial(id, presetPo){
       <div class="row2">
         <label class="fld"><span class="lab">Colour / spec</span><input id="mat_color" value="${m?esc(m.color||''):''}"></label>
         <label class="fld"><span class="lab">Supplier</span><select id="mat_sup">${supOptions}</select></label>
+      </div>
+      <div id="mat_newsup" style="display:none;gap:8px;align-items:center;margin-top:-6px;margin-bottom:4px">
+        <input id="mat_newsupname" placeholder="New supplier name" autocomplete="off" style="flex:1">
+        <button type="button" class="btn sm primary" id="mat_newsupadd">Add supplier</button>
+        <button type="button" class="btn sm" id="mat_newsupcancel">Cancel</button>
       </div>
       <div class="row3">
         <label class="fld"><span class="lab">Qty per garment</span><input id="mat_qpg" type="number" step="0.001" min="0" value="${m&&m.qtyPerGarment!=null?m.qtyPerGarment:''}"></label>
@@ -1826,6 +1836,22 @@ function editMaterial(id, presetPo){
   if(srcSel) srcSel.onchange=toggleSource;
   if(stockSearch) stockSearch.oninput=()=>{ const it=DB.inventory.find(x=>x.id===stockLabelToId[stockSearch.value]); if(it) fillFromStock(it); else stockInfo.style.display="none"; };
   toggleSource();
+
+  // ---- add a new supplier straight from the dropdown ----
+  const supSel=$("#mat_sup"), newSupBox=$("#mat_newsup");
+  function rebuildSupOptions(selId){
+    supSel.innerHTML=`<option value="">Unassigned</option>`+DB.suppliers.map(x=>`<option value="${x.id}">${esc(x.name)}</option>`).join("")+`<option value="__new__">+ Add new supplier…</option>`;
+    if(selId!=null) supSel.value=selId;
+  }
+  supSel.onchange=()=>{ if(supSel.value==="__new__"){ newSupBox.style.display="flex"; const n=$("#mat_newsupname"); if(n) n.focus(); } else newSupBox.style.display="none"; };
+  $("#mat_newsupadd").onclick=()=>{
+    const nm=$("#mat_newsupname").value.trim(); if(!nm){ toast("Enter the supplier name","warn"); return; }
+    let s=DB.suppliers.find(x=>(x.name||"").trim().toLowerCase()===nm.toLowerCase());
+    if(!s){ s={id:uid("sup"), name:nm, country:"", material:"", contact:"", email:""}; DB.suppliers.push(s); }
+    rebuildSupOptions(s.id); newSupBox.style.display="none"; $("#mat_newsupname").value="";
+    toast("Supplier added — saved with this order","ok");
+  };
+  $("#mat_newsupcancel").onclick=()=>{ newSupBox.style.display="none"; supSel.value=(m&&m.supplierId)||""; };
   if(source0==="stock" && m && m.stockItemId){ const it=DB.inventory.find(x=>x.id===m.stockItemId); if(it){ stockInfo.style.display="block"; stockInfo.innerHTML=`<b>${esc(it.item)}</b>${it.color&&it.color!=="—"?" · "+esc(it.color):""} — available <b>${num(invBalance(it))} ${esc(it.unit||"")}</b> in stock · unit cost ${money(it.unitPrice)}.`; } }
 
   $("#mat_save").onclick=async()=>{
@@ -1841,9 +1867,10 @@ function editMaterial(id, presetPo){
     const totalQty=Number(totalE.value||0); if(totalQty<=0){ toast("Enter the total required quantity","warn"); return; }
     const curr=curS.value==="LKR"?"LKR":"USD"; const costOrig=Number(costE.value||0), fx=Number(fxE.value||0);
     let unitCost=costOrig; if(source==="purchase" && curr==="LKR"){ if(fx>0){ unitCost=costOrig/fx; } else { toast("Enter the exchange rate (Rs per US$) for an LKR cost","warn"); return; } }
-    const rec={ poId, material, type:$("#mat_type").value, color:$("#mat_color").value.trim(),
+    const supVal = $("#mat_sup").value==="__new__" ? "" : $("#mat_sup").value;
+    const rec={ poId, omn:($("#mat_omn")?$("#mat_omn").value:"")||(m&&m.omn)||nextOMN(), material, type:$("#mat_type").value, color:$("#mat_color").value.trim(),
       unit:$("#mat_unit").value, qtyPerGarment:Number($("#mat_qpg").value||0), totalQty,
-      supplierId:$("#mat_sup").value, unitCost,
+      supplierId:supVal, unitCost,
       costCurr:source==="stock"?"USD":curr, costOrig:source==="stock"?unitCost:costOrig, fxRate:(source==="purchase"&&curr==="LKR")?fx:0,
       source, stockItemId,
       status:source==="stock"?"In Stock":$("#mat_status").value, eta:source==="stock"?"":$("#mat_eta").value };
@@ -1877,7 +1904,7 @@ VIEWS.materials=function(){
     const statusCell = m.source==="stock"
       ? `${pill("From stock","p-green")}${stockIt?`<div class="muted" style="font-size:11px">${esc(stockIt.item)}${stockIt.color&&stockIt.color!=="—"?" · "+esc(stockIt.color):""}</div>`:""}`
       : `<select onchange="setMatStatus('${m.id}',this.value)" style="width:130px;padding:5px 8px;font-size:12px">${MAT_STATUS.map(s=>`<option ${s===m.status?"selected":""}>${s}</option>`).join("")}</select>`;
-    return `<tr><td><div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
+    return `<tr><td>${m.omn?`<div class="mono" style="font-size:11px;color:var(--chalk)">${esc(m.omn)}</div>`:""}<div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
       <td>${m.po?`<span class="linklike" onclick="openPO('${m.poId}')">${esc(m.po.poNumber)}</span>`:"—"}</td>
       <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
       <td>${m.source==="stock"?'<span class="muted">From stock</span>':esc(supplierName(m.supplierId))}</td>
@@ -3611,14 +3638,28 @@ function nextInvCode(){
   do{ code="ITM-"+String(n).padStart(4,"0"); n++; }while(codes.has(code.toLowerCase()));
   return code;
 }
+/* next unique Order Materials Number — OM-0001, 0002 … */
+function nextOMN(){
+  const used=new Set((DB.bom||[]).map(m=>(m.omn||"").trim().toLowerCase()).filter(Boolean));
+  const nums=(DB.bom||[]).map(m=>{ const x=(m.omn||"").match(/(\d+)\s*$/); return x?Number(x[1]):0; });
+  let n=(nums.length?Math.max(...nums):0)+1, omn;
+  do{ omn="OM-"+String(n).padStart(4,"0"); n++; }while(used.has(omn.toLowerCase()));
+  return omn;
+}
+/* open material orders (not yet received, excluding from-stock lines) for receiving into inventory */
+function openMaterialOrders(){ return (DB.bom||[]).filter(m=>m.source!=="stock" && m.status!=="Received"); }
 function editInv(id){
   const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today(),code:nextInvCode()};
   const rec={...r};
   rec.curr = r.priceCurr || "USD";
   rec.fxRate = r.fxRate || "";
   rec.invPrice = (r.priceCurr==="LKR") ? (r.priceOrig!=null?r.priceOrig:"") : (r.unitPrice!=null?r.unitPrice:"");
+  rec.omnRef = "";
+  const moOptions = [{value:"",label:"— Direct GRN (no material order) —"}].concat(
+    openMaterialOrders().map(mo=>({value:mo.id, label:(mo.omn?mo.omn+" · ":"")+mo.material+(mo.color?" · "+mo.color:"")+" · "+supplierName(mo.supplierId)+" · ordered "+num(mo.totalQty)+" "+(mo.unit||"")})));
   openModal({title:id?"Edit inventory item":"New inventory item (GRN)", wide:true, record:rec, submitLabel:id?"Save item":"Add item",
     fields:[
+      ...(id?[]:[{name:"omnRef",label:"Receive against material order (OMN)",type:"select",options:moOptions}]),
       {name:"grn",label:"GRN number",half:true,placeholder:"goods received note no.",list:invDistinct("grn")},
       {name:"code",label:"Code (auto)",half:true,placeholder:"auto-generated — unique",list:invDistinct("code")},
       {name:"item",label:"Item name",required:true,list:invDistinct("item")},
@@ -3650,6 +3691,9 @@ function editInv(id){
       if(curr==="LKR"){ if(fx>0){ usd=invPrice/fx; } else { toast("Enter the exchange rate (Rs per US$) for an LKR invoice","warn"); return; } }
       d.unitPrice=usd; d.priceCurr=curr; d.priceOrig=invPrice; d.fxRate=curr==="LKR"?fx:0;
       delete d.invPrice; delete d.curr;
+      // if received against a material order, link it and mark that order Received
+      if(d.omnRef){ const mo=DB.bom.find(x=>x.id===d.omnRef); if(mo){ mo.status="Received"; d.omnRefId=mo.id; d.omn=mo.omn||""; } }
+      delete d.omnRef;
       // code must be unique; auto-generate if left blank
       let codeVal=(d.code||"").trim();
       if(!codeVal){ codeVal=nextInvCode(); }
@@ -3674,6 +3718,32 @@ function editInv(id){
       else { hint.style.display="none"; }
     }
     cS.onchange=upd; ip.oninput=upd; fx.oninput=upd; upd();
+  })();
+  // receive against a material order — auto-fill, so you just check price & qty then Add
+  (function(){
+    const sel=$("#mform [name='omnRef']"); if(!sel) return;
+    const get=n=>$("#mform [name='"+n+"']");
+    const hint=document.createElement("div"); hint.className="notice"; hint.style.cssText="grid-column:1/-1;margin-top:-4px;display:none";
+    sel.closest(".fld").insertAdjacentElement("afterend",hint);
+    sel.onchange=()=>{
+      const mo=DB.bom.find(x=>x.id===sel.value);
+      if(!mo){ hint.style.display="none"; return; }
+      const po=poByNumber(mo.poId);
+      if(get("item")) get("item").value=mo.material||"";
+      if(get("color")) get("color").value=mo.color||"";
+      if(get("supplier")) get("supplier").value=supplierName(mo.supplierId)||"";
+      const u=get("unit"); if(u && mo.unit && Array.from(u.options).some(o=>o.value===mo.unit)) u.value=mo.unit;
+      if(get("po")) get("po").value=po?po.poNumber:"";
+      if(get("curr")) get("curr").value=mo.costCurr||"USD";
+      if(get("invPrice")) get("invPrice").value=(mo.costCurr==="LKR"?(mo.costOrig!=null?mo.costOrig:""):(mo.unitCost!=null?mo.unitCost:""));
+      if(get("fxRate")) get("fxRate").value=mo.fxRate||"";
+      const cs=get("curr"); if(cs) cs.dispatchEvent(new Event("change"));
+      const ip2=get("invPrice"); if(ip2) ip2.dispatchEvent(new Event("input"));
+      const orderedPrice = mo.costCurr==="LKR" ? ("Rs "+num(mo.costOrig)+" @ "+num(mo.fxRate)+" ≈ "+money(mo.unitCost)) : money(mo.unitCost);
+      const recvd = get("received"); if(recvd && !recvd.value) recvd.focus();
+      hint.style.display="block";
+      hint.innerHTML=`<b>Order ${esc(mo.omn||"")}</b> — ordered <b>${num(mo.totalQty)} ${esc(mo.unit||"")}</b> @ <b>${orderedPrice}</b>${po?` · PO ${esc(po.poNumber)}`:""}.<br>Details auto-filled. <b>Check the price & received qty</b> against the invoice, then Add. This marks the order <b>Received</b>.`;
+    };
   })();
 }
 
