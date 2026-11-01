@@ -1262,7 +1262,7 @@ VIEWS.dashboard = function(){
       <div class="panel-pad">${svgVBars({labels:mLabels,series:[{name:"CM income",color:CH_GREEN,values:cmByM}],fmt:(v)=>cmMoney(v)})}</div></div>
   </div>`;
 
-  $("#view").innerHTML = backupReminderHTML() + kpis + `
+  $("#view").innerHTML = fxBarHTML() + backupReminderHTML() + kpis + `
   <div class="grid2">
     <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production summary</h3><div class="meta">factory vs sub-contract · ${thisMonth()}</div>
       <div class="actions"><button class="btn sm" onclick="go('daily')">Daily production</button> <button class="btn sm" onclick="go('subcontract')">Sub contract</button></div></div>
@@ -1287,7 +1287,58 @@ VIEWS.dashboard = function(){
     </div>
   </div>`;
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
+  fillMarketRate();
 };
+/* ---- USD → LKR exchange-rate bar (dashboard) ---- */
+function fxBarHiddenToday(){ try{ return localStorage.getItem("fx_bar_hidden")===today(); }catch(e){ return false; } }
+function dismissFxBar(){ try{ localStorage.setItem("fx_bar_hidden", today()); }catch(e){} if(ROUTE==="dashboard") VIEWS.dashboard(); }
+function fxBarHTML(){
+  if(fxBarHiddenToday()) return "";
+  const fx=DB.fx||{};
+  const set = fx.usdlkr ? ("Rs "+num(fx.usdlkr)) : "— not set —";
+  const src = fx.source ? (esc(fx.source)+(fx.date?" · "+fmtDate(fx.date):"")) : "";
+  return `<div class="no-print" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:linear-gradient(90deg,var(--denim),var(--chalk));color:#fff;border-radius:12px;padding:10px 14px;margin-bottom:12px">
+    <span style="font-weight:700;font-size:13.5px;letter-spacing:.02em">💱 USD → LKR</span>
+    <span style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">${set}</span>
+    ${src?`<span style="font-size:11.5px;opacity:.85">${src}</span>`:""}
+    <span id="fxmarket" style="font-size:11.5px;opacity:.82"></span>
+    <a href="https://www.cbsl.gov.lk/en/rates-and-indicators/exchange-rates" target="_blank" rel="noopener" style="color:#fff;font-size:12px;text-decoration:underline;margin-left:auto">CBSL indicative ↗</a>
+    ${isAdmin()?`<button class="btn sm" style="background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.45)" onclick="setFxRate()">Set rate</button>`:""}
+    <button onclick="dismissFxBar()" title="Hide for today" style="background:transparent;border:0;color:#fff;font-size:20px;cursor:pointer;line-height:1;opacity:.85">×</button>
+  </div>`;
+}
+async function fillMarketRate(){
+  const el=$("#fxmarket"); if(!el) return;
+  const tdy=today();
+  let cached=null; try{ cached=JSON.parse(localStorage.getItem("fx_market")||"null"); }catch(e){}
+  if(cached&&cached.date===tdy&&cached.rate){ el.textContent="· market ≈ Rs "+num(cached.rate); return; }
+  try{
+    const r=await fetch("https://open.er-api.com/v6/latest/USD");
+    const j=await r.json();
+    const lkr=j&&j.rates&&j.rates.LKR;
+    if(lkr){ const v=Math.round(lkr*100)/100; el.textContent="· market ≈ Rs "+num(v); try{ localStorage.setItem("fx_market",JSON.stringify({date:tdy,rate:v})); }catch(e){} }
+  }catch(e){ /* offline or blocked — just show the set rate */ }
+}
+function setFxRate(){
+  if(!isAdmin()){ toast("Administrators only","warn"); return; }
+  const fx=DB.fx||{};
+  let market=""; try{ const c=JSON.parse(localStorage.getItem("fx_market")||"null"); if(c&&c.rate) market=num(c.rate); }catch(e){}
+  openModal({title:"Set USD → LKR rate", record:{usdlkr:fx.usdlkr||"", source:fx.source||"CBSL indicative"}, submitLabel:"Save rate",
+    fields:[
+      {name:"usdlkr",label:"1 USD = ? LKR",type:"number",step:"0.01",required:true,min:0,placeholder:market?("market ≈ "+market):"e.g. 300.50"},
+      {name:"source",label:"Source / note",placeholder:"CBSL indicative"},
+    ],
+    onSubmit:async d=>{
+      const v=Number(d.usdlkr||0); if(v<=0){ toast("Enter a valid rate","warn"); return; }
+      DB.fx={usdlkr:v, date:today(), source:(d.source||"CBSL indicative").trim(), setBy:CURRENT?CURRENT.username:""};
+      logAct("Set USD→LKR rate","Settings","Rs "+num(v));
+      await save(); closeModal(); if(ROUTE==="dashboard") VIEWS.dashboard(); toast("Rate saved — 1 USD = Rs "+num(v),"ok");
+    }});
+  const form=$("#mform");
+  if(form){ const n=document.createElement("div"); n.className="notice"; n.style.marginTop="6px";
+    n.innerHTML=`Open the <a href="https://www.cbsl.gov.lk/en/rates-and-indicators/exchange-rates" target="_blank" rel="noopener"><b>CBSL exchange rates</b> page ↗</a>, read the <b>Indicative USD rate</b>, and type it here. ${market?("Today's market rate ≈ <b>Rs "+market+"</b>."):""} This rate is shared to everyone and prefills the exchange-rate field when entering Rs costs.`;
+    form.appendChild(n); }
+}
 function poPillCell(s){ return pill(s, poPill(s)); }
 
 function buildAlerts(){
@@ -1715,7 +1766,7 @@ function editMaterial(id, presetPo){
   const statusOpts = MAT_STATUS.map(s=>`<option ${(m?m.status===s:s==="Required")?"selected":""}>${s}</option>`).join("");
   const curr0 = m ? (m.costCurr||"USD") : "USD";
   const cost0 = m ? (m.costCurr==="LKR" ? (m.costOrig!=null?m.costOrig:"") : (m.unitCost!=null?m.unitCost:"")) : "";
-  const fx0 = m ? (m.fxRate||"") : "";
+  const fx0 = m ? (m.fxRate||"") : ((DB.fx&&DB.fx.usdlkr)||"");
   const source0 = m ? (m.source||"purchase") : "purchase";
   // stock items available to allocate from (balance > 0)
   const stockItems=(DB.inventory||[]).filter(i=>invBalance(i)>0).sort((a,b)=>(a.item||"").localeCompare(b.item||""));
@@ -3652,7 +3703,7 @@ function editInv(id){
   const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today(),code:nextInvCode()};
   const rec={...r};
   rec.curr = r.priceCurr || "USD";
-  rec.fxRate = r.fxRate || "";
+  rec.fxRate = r.fxRate || (id?"":((DB.fx&&DB.fx.usdlkr)||""));
   rec.invPrice = (r.priceCurr==="LKR") ? (r.priceOrig!=null?r.priceOrig:"") : (r.unitPrice!=null?r.unitPrice:"");
   rec.omnRef = "";
   const moOptions = [{value:"",label:"— Direct GRN (no material order) —"}].concat(
