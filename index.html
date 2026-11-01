@@ -327,6 +327,7 @@
 <div class="navscrim" id="navScrim" onclick="closeNav()"></div>
 
 <div class="main">
+  <div id="ratestrip" class="no-print"></div>
   <div class="mobilebar">
     <button class="hamburger" onclick="toggleNav()" aria-label="Menu">☰</button>
     <div class="mbrand"><div class="stitch">S</div><span>Seam</span></div>
@@ -394,7 +395,7 @@ function subscribeFirebase(){
       if(me && me.active){ CURRENT=me; }
       else { doLogout(); return; }
     }
-    buildNav();
+    buildNav(); renderRateStrip();
     if(CURRENT && !$("#scrim").classList.contains("open") && VIEWS[ROUTE]){
       if(!userCanSee(ROUTE)) go(ROUTE); else VIEWS[ROUTE]();  // live refresh / re-gate
     }
@@ -764,6 +765,7 @@ async function initData(){
   if(!DB.featureVis.actions) DB.featureVis.actions={};
   if(!DB.tabLabels) DB.tabLabels={};   // super-admin custom tab names
   if(!DB.defaults) DB.defaults={};     // module defaults (currency, unit, reorder, cm price)
+  if(!DB.topbar) DB.topbar={rate:true, notif:true};   // top-bar features (rate bar, notifications icon)
   syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
   if(DB.users.length && !DB.users.some(u=>u.superadmin)){
@@ -1266,7 +1268,7 @@ VIEWS.dashboard = function(){
       <div class="panel-pad">${svgVBars({labels:mLabels,series:[{name:"CM income",color:CH_GREEN,values:cmByM}],fmt:(v)=>cmMoney(v)})}</div></div>
   </div>`;
 
-  $("#view").innerHTML = fxBarHTML() + backupReminderHTML() + kpis + `
+  $("#view").innerHTML = backupReminderHTML() + kpis + `
   <div class="grid2">
     <div class="panel" style="grid-column:1/-1"><div class="panel-head"><h3>Production summary</h3><div class="meta">factory vs sub-contract · ${thisMonth()}</div>
       <div class="actions"><button class="btn sm" onclick="go('daily')">Daily production</button> <button class="btn sm" onclick="go('subcontract')">Sub contract</button></div></div>
@@ -1291,25 +1293,39 @@ VIEWS.dashboard = function(){
     </div>
   </div>`;
   $$(".clk").forEach(r=> r.onclick=()=>openPO(r.dataset.po));
-  fillMarketRate();
 };
-/* ---- USD → LKR exchange-rate bar (dashboard) ---- */
+/* ---- Persistent top bar: USD → LKR rate + notifications (stays across tabs) ---- */
 function fxBarHiddenToday(){ try{ return localStorage.getItem("fx_bar_hidden")===today(); }catch(e){ return false; } }
-function dismissFxBar(){ try{ localStorage.setItem("fx_bar_hidden", today()); }catch(e){} if(ROUTE==="dashboard") VIEWS.dashboard(); }
-function fxBarHTML(){
-  if(fxBarHiddenToday()) return "";
+function dismissFxBar(){ try{ localStorage.setItem("fx_bar_hidden", today()); }catch(e){} renderRateStrip(); }
+function renderRateStrip(){
+  const el=document.getElementById("ratestrip"); if(!el) return;
+  if(!CURRENT){ el.innerHTML=""; el.style.display="none"; return; }
+  const tb=DB.topbar||{};
+  const showRate = (tb.rate!==false) && !fxBarHiddenToday();   // super-admin global toggle + per-device daily dismiss
+  const showNotif = (tb.notif!==false);                        // notifications icon (foundation for user-wise reminders)
+  if(!showRate && !showNotif){ el.innerHTML=""; el.style.display="none"; return; }
+  el.style.display="";
   const fx=DB.fx||{};
-  const set = fx.usdlkr ? ("Rs "+num(fx.usdlkr)) : "— not set —";
-  const src = fx.source ? (esc(fx.source)+(fx.date?" · "+fmtDate(fx.date):"")) : "";
-  return `<div class="no-print" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:linear-gradient(90deg,var(--denim),var(--chalk));color:#fff;border-radius:12px;padding:10px 14px;margin-bottom:12px">
-    <span style="font-weight:700;font-size:13.5px;letter-spacing:.02em">💱 USD → LKR</span>
-    <span style="font-size:19px;font-weight:800;font-variant-numeric:tabular-nums">${set}</span>
-    ${src?`<span style="font-size:11.5px;opacity:.85">${src}</span>`:""}
-    <span id="fxmarket" style="font-size:11.5px;opacity:.82"></span>
-    <a href="https://www.cbsl.gov.lk/en/rates-and-indicators/exchange-rates" target="_blank" rel="noopener" style="color:#fff;font-size:12px;text-decoration:underline;margin-left:auto">CBSL indicative ↗</a>
-    ${isAdmin()?`<button class="btn sm" style="background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.45)" onclick="setFxRate()">Set rate</button>`:""}
-    <button onclick="dismissFxBar()" title="Hide for today" style="background:transparent;border:0;color:#fff;font-size:20px;cursor:pointer;line-height:1;opacity:.85">×</button>
+  const set = fx.usdlkr ? ("Rs "+num(fx.usdlkr)) : "—";
+  const src = fx.source&&fx.usdlkr ? (" · "+fmtDate(fx.date)) : "";
+  el.innerHTML=`<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:linear-gradient(90deg,var(--denim),var(--chalk));color:#fff;padding:5px 14px;font-size:12px">
+    ${showRate?`<span style="font-weight:700">💱 USD</span>
+      <span style="font-size:13.5px;font-weight:800;font-variant-numeric:tabular-nums">${set}</span>
+      <span id="fxmarket" style="opacity:.8;font-size:11px"></span>
+      <span style="opacity:.75;font-size:11px">${src}</span>
+      <a href="https://www.cbsl.gov.lk/en/rates-and-indicators/exchange-rates" target="_blank" rel="noopener" style="color:#fff;font-size:11px;text-decoration:underline">CBSL ↗</a>
+      ${isAdmin()?`<button class="btn sm" style="padding:1px 8px;font-size:11px;background:rgba(255,255,255,.2);color:#fff;border-color:rgba(255,255,255,.45)" onclick="setFxRate()">Set</button>`:""}
+      <button onclick="dismissFxBar()" title="Hide for today" style="background:transparent;border:0;color:#fff;font-size:16px;cursor:pointer;line-height:1;opacity:.8">×</button>`:""}
+    ${showNotif?`<button onclick="openNotifications()" title="Notifications" style="margin-left:auto;background:transparent;border:0;color:#fff;font-size:15px;cursor:pointer;position:relative;line-height:1">🔔</button>`:""}
   </div>`;
+  if(showRate) fillMarketRate();
+}
+function openNotifications(){
+  $("#modal").className="modal";
+  $("#modal").innerHTML=`<div class="modal-head"><h3>Notifications</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body"><div class="notice" style="margin-top:0">No notifications yet. <b>User-wise reminders &amp; alerts</b> for staff are coming soon — they'll appear here.</div></div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Close</button></div>`;
+  $("#scrim").classList.add("open"); $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
 }
 async function fillMarketRate(){
   const el=$("#fxmarket"); if(!el) return;
@@ -1336,7 +1352,7 @@ function setFxRate(){
       const v=Number(d.usdlkr||0); if(v<=0){ toast("Enter a valid rate","warn"); return; }
       DB.fx={usdlkr:v, date:today(), source:(d.source||"CBSL indicative").trim(), setBy:CURRENT?CURRENT.username:""};
       logAct("Set USD→LKR rate","Settings","Rs "+num(v));
-      await save(); closeModal(); if(ROUTE==="dashboard") VIEWS.dashboard(); toast("Rate saved — 1 USD = Rs "+num(v),"ok");
+      await save(); closeModal(); renderRateStrip(); toast("Rate saved — 1 USD = Rs "+num(v),"ok");
     }});
   const form=$("#mform");
   if(form){ const n=document.createElement("div"); n.className="notice"; n.style.marginTop="6px";
@@ -5053,7 +5069,12 @@ function superModulesHTML(){
           <label style="display:block">${lab("Default CM price — daily production")}<input id="df_cm" type="number" step="0.01" min="0" value="${df.cmPrice!=null?df.cmPrice:''}" style="width:100%"></label>
           <div><button class="btn primary" id="mod_savedefaults">Save defaults</button></div>
         </div></div>
-    </div>`;
+    </div>
+    <div class="panel"><div class="panel-head"><h3>Top bar features</h3><div class="meta">the strip at the very top of the app</div></div>
+      <div class="panel-pad">
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px"><input type="checkbox" id="tb_rate" ${((DB.topbar||{}).rate!==false)?"checked":""}> <span style="flex:1"><b>USD → LKR rate bar</b><div class="muted" style="font-size:12px">Show the exchange-rate strip at the top of every page.</div></span></label>
+        <label style="display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13.5px"><input type="checkbox" id="tb_notif" ${((DB.topbar||{}).notif!==false)?"checked":""}> <span style="flex:1"><b>Notifications icon</b> 🔔<div class="muted" style="font-size:12px">Show the bell icon — foundation for user-wise reminders &amp; alerts (coming soon).</div></span></label>
+      </div></div>`;
 }
 function wireSuperModules(){
   const sn=$("#mod_savenames"); if(sn) sn.onclick=async()=>{
@@ -5066,6 +5087,9 @@ function wireSuperModules(){
     logAct("Set module defaults","Super Admin","");
     await save(); VIEWS.superadmin(); toast("Module defaults saved","ok");
   };
+  const tr=$("#tb_rate"), tn=$("#tb_notif");
+  async function saveTopbar(){ DB.topbar={rate:tr.checked, notif:tn.checked}; logAct("Changed top-bar features","Super Admin","rate "+(tr.checked?"on":"off")+" · notif "+(tn.checked?"on":"off")); await save(); renderRateStrip(); toast("Top bar updated","ok"); }
+  if(tr) tr.onchange=saveTopbar; if(tn) tn.onchange=saveTopbar;
 }
 function roleTabsEdit(key){
   const rl=(DB.roles||[]).find(r=>r.key===key); if(!rl) return;
@@ -5233,7 +5257,7 @@ function renderUserChrome(){
 }
 function enterApp(){
   $("#authScreen").classList.remove("show");
-  renderUserChrome(); buildNav(); go(ROUTE);
+  renderUserChrome(); buildNav(); go(ROUTE); renderRateStrip();
   subscribeFirebase();
   if(!PERSIST_OK){
     const t=$("#view");
