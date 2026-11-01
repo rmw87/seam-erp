@@ -762,6 +762,8 @@ async function initData(){
   if(!DB.featureVis) DB.featureVis={tabs:{},actions:{}};   // super-admin global show/hide (tabs + actions)
   if(!DB.featureVis.tabs) DB.featureVis.tabs={};
   if(!DB.featureVis.actions) DB.featureVis.actions={};
+  if(!DB.tabLabels) DB.tabLabels={};   // super-admin custom tab names
+  if(!DB.defaults) DB.defaults={};     // module defaults (currency, unit, reorder, cm price)
   syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
   if(DB.users.length && !DB.users.some(u=>u.superadmin)){
@@ -966,6 +968,8 @@ function userCanSee(route){
   if(!allowed) return true;                 // no restriction set → sees all operational tabs
   return allowed.includes(route);
 }
+/* custom tab name set by super admin, else the built-in label */
+function tabLabelFor(id, fallback){ const c=(DB.tabLabels||{})[id]; return (c&&c.trim())?c:fallback; }
 function buildNav(){
   const groups = NAV.filter(g=> (!g.admin || isAdmin()) && (!g.super || isSuperAdmin()));
   $("#nav").innerHTML = groups.map(g=>{
@@ -975,7 +979,7 @@ function buildNav(){
     items.map(it=>{
       const b=navBadge(it.id);
       return `<div class="nav-item ${ROUTE===it.id?"active":""}" data-route="${it.id}">
-        <span class="ico">${it.ico}</span><span>${it.label}</span>${b?`<span class="badge">${b}</span>`:""}</div>`;
+        <span class="ico">${it.ico}</span><span>${esc(tabLabelFor(it.id, it.label))}</span>${b?`<span class="badge">${b}</span>`:""}</div>`;
     }).join("");
   }).join("");
   $$(".nav-item").forEach(n=> n.onclick=()=>go(n.dataset.route));
@@ -1764,7 +1768,7 @@ function editMaterial(id, presetPo){
   const typeOpts = ["Fabric","Thread","Trim","Packaging","Other"].map(t=>`<option ${m&&m.type===t?"selected":""}>${t}</option>`).join("");
   const unitOpts = ["pcs","kg","m","yd","cone","roll","gross","set"].map(u=>`<option ${m&&m.unit===u?"selected":""}>${u}</option>`).join("");
   const statusOpts = MAT_STATUS.map(s=>`<option ${(m?m.status===s:s==="Required")?"selected":""}>${s}</option>`).join("");
-  const curr0 = m ? (m.costCurr||"USD") : "USD";
+  const curr0 = m ? (m.costCurr||"USD") : ((DB.defaults&&DB.defaults.currency)||"USD");
   const cost0 = m ? (m.costCurr==="LKR" ? (m.costOrig!=null?m.costOrig:"") : (m.unitCost!=null?m.unitCost:"")) : "";
   const fx0 = m ? (m.fxRate||"") : ((DB.fx&&DB.fx.usdlkr)||"");
   const source0 = m ? (m.source||"purchase") : "purchase";
@@ -2283,7 +2287,7 @@ function editDaily(id){
       <div id="d_poinfo" class="notice" style="display:none;margin-top:0"></div>
       <div class="row2">
         <label class="fld"><span class="lab">Quantity made today *</span><input id="d_qty" type="number" min="0" value="${e?e.qty:""}" placeholder="pieces"></label>
-        <label class="fld"><span class="lab">CM price (per piece) *</span><input id="d_cm" type="number" step="0.01" min="0" value="${e?e.cmPrice:""}" placeholder="cut & make rate"></label>
+        <label class="fld"><span class="lab">CM price (per piece) *</span><input id="d_cm" type="number" step="0.01" min="0" value="${e?e.cmPrice:((DB.defaults&&DB.defaults.cmPrice)||"")}" placeholder="cut & make rate"></label>
       </div>
       <div class="panel-pad" style="background:var(--surface-2);border-radius:10px;display:flex;justify-content:space-between;align-items:center">
         <span class="muted" style="font-size:12.5px;text-transform:uppercase;letter-spacing:.08em">Daily CM income (auto)</span>
@@ -3700,9 +3704,10 @@ function nextOMN(){
 /* open material orders (not yet received, excluding from-stock lines) for receiving into inventory */
 function openMaterialOrders(){ return (DB.bom||[]).filter(m=>m.source!=="stock" && m.status!=="Received"); }
 function editInv(id){
-  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:"yds",date:today(),code:nextInvCode()};
+  const df=DB.defaults||{};
+  const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:df.unit||"yds",date:today(),code:nextInvCode(),reorder:(df.reorder!=null&&df.reorder!==0?df.reorder:"")};
   const rec={...r};
-  rec.curr = r.priceCurr || "USD";
+  rec.curr = r.priceCurr || (id?"USD":(df.currency||"USD"));
   rec.fxRate = r.fxRate || (id?"":((DB.fx&&DB.fx.usdlkr)||""));
   rec.invPrice = (r.priceCurr==="LKR") ? (r.priceOrig!=null?r.priceOrig:"") : (r.unitPrice!=null?r.unitPrice:"");
   rec.omnRef = "";
@@ -4527,7 +4532,7 @@ VIEWS.users=function(){
         <tbody>${rows}</tbody></table></div></div>`;
 };
 /* ---- per-user tab access (admin) ---- */
-function tabLabel(id){ for(const g of NAV){ const it=g.items.find(x=>x.id===id); if(it) return it.label; } return id; }
+function tabLabel(id){ for(const g of NAV){ const it=g.items.find(x=>x.id===id); if(it) return tabLabelFor(id, it.label); } return id; }
 function openTabAccess(userId){
   const u=DB.users.find(x=>x.id===userId); if(!u) return;
   const current = u.allowedTabs || CONTROLLABLE_TABS.slice();   // default: all
@@ -4643,9 +4648,9 @@ function fmtTs(ts){ try{ return new Date(ts).toLocaleString(); }catch(e){ return
 
 VIEWS.superadmin=function(){
   if(!isSuperAdmin()){ go("dashboard"); return; }
-  const titles={log:"Activity Log",audit:"Data by User",users:"User Management",roles:"Roles & Access",visibility:"Feature Visibility",db:"Database Usage"};
+  const titles={log:"Activity Log",audit:"Data by User",users:"User Management",roles:"Roles & Access",visibility:"Feature Visibility",modules:"Tabs & Defaults",db:"Database Usage"};
   setHead("Super Admin", titles[SUPER_TAB.tab]||"Super Admin","");
-  const pills=[["log","Activity log"],["audit","By user"],["users","Users"],["roles","Roles & access"],["visibility","Visibility"],["db","Database"]]
+  const pills=[["log","Activity log"],["audit","By user"],["users","Users"],["roles","Roles & access"],["visibility","Visibility"],["modules","Tabs & defaults"],["db","Database"]]
     .map(([k,l])=>`<div class="fp ${SUPER_TAB.tab===k?"on":""}" data-st="${k}">${l}</div>`).join("");
   let bodyHTML="";
   if(SUPER_TAB.tab==="log") bodyHTML=superLogHTML();
@@ -4653,10 +4658,12 @@ VIEWS.superadmin=function(){
   else if(SUPER_TAB.tab==="users") bodyHTML=superUsersHTML();
   else if(SUPER_TAB.tab==="db") bodyHTML=superDbHTML();
   else if(SUPER_TAB.tab==="visibility") bodyHTML=superVisibilityHTML();
+  else if(SUPER_TAB.tab==="modules") bodyHTML=superModulesHTML();
   else bodyHTML=superRolesHTML();
   $("#view").innerHTML=`<div class="toolbar"><div class="filterpills">${pills}</div></div>${bodyHTML}`;
   $$(".fp[data-st]").forEach(f=>f.onclick=()=>{ SUPER_TAB.tab=f.dataset.st; VIEWS.superadmin(); });
   if(SUPER_TAB.tab==="log") wireSuperLog();
+  if(SUPER_TAB.tab==="modules") wireSuperModules();
 };
 
 /* Delegated views for ordinary admins the super admin has granted access.
@@ -5022,6 +5029,43 @@ async function toggleFeatureAction(key,on){
   DB.featureVis.actions[key]=!!on;
   logAct(on?"Enabled action":"Disabled action","Super Admin", key);
   await save(); toast(key+(on?" enabled":" disabled")+" for users","ok");
+}
+/* ---- Tabs & defaults (super admin central settings) ---- */
+function superModulesHTML(){
+  const tl=DB.tabLabels||{}, df=DB.defaults||{};
+  const navItems=[]; NAV.forEach(g=>g.items.forEach(it=>{ if(it.id!=="account"&&it.id!=="superadmin") navItems.push(it); }));
+  const nameRows=navItems.map(it=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line-soft)">
+     <span style="width:20px;text-align:center">${it.ico}</span>
+     <span class="muted" style="flex:0 0 140px;font-size:12.5px">${esc(it.label)}</span>
+     <input data-tabid="${it.id}" class="tabname" value="${esc(tl[it.id]||'')}" placeholder="${esc(it.label)}" autocomplete="off" style="flex:1;min-width:0"></div>`).join("");
+  const unitOpts=["yds","pcs","m","kg","roll","cone","set"].map(u=>`<option ${df.unit===u?"selected":""}>${u}</option>`).join("");
+  const lab=t=>`<span class="muted" style="font-size:12.5px;display:block;margin-bottom:4px">${t}</span>`;
+  return `<div class="notice">Rename any tab to your own words, and set module defaults that prefill when staff add new records. Changes apply to everyone. (Show/hide of tabs &amp; actions is on the <b>Visibility</b> tab.)</div>
+    <div class="grid2">
+      <div class="panel"><div class="panel-head"><h3>Tab names</h3><div class="meta">blank = built-in name</div></div>
+        <div class="panel-pad">${nameRows}
+          <div style="margin-top:12px"><button class="btn primary" id="mod_savenames">Save tab names</button></div></div></div>
+      <div class="panel"><div class="panel-head"><h3>Module defaults</h3><div class="meta">prefill on new records</div></div>
+        <div class="panel-pad" style="display:flex;flex-direction:column;gap:12px">
+          <label style="display:block">${lab("Default currency — costs &amp; prices")}<select id="df_curr" style="width:100%"><option value="USD" ${(df.currency||'USD')==='USD'?'selected':''}>US$ (USD)</option><option value="LKR" ${df.currency==='LKR'?'selected':''}>Rupees (LKR)</option></select></label>
+          <label style="display:block">${lab("Default inventory unit")}<select id="df_unit" style="width:100%">${unitOpts}</select></label>
+          <label style="display:block">${lab("Default reorder level")}<input id="df_reorder" type="number" min="0" value="${df.reorder!=null?df.reorder:''}" style="width:100%"></label>
+          <label style="display:block">${lab("Default CM price — daily production")}<input id="df_cm" type="number" step="0.01" min="0" value="${df.cmPrice!=null?df.cmPrice:''}" style="width:100%"></label>
+          <div><button class="btn primary" id="mod_savedefaults">Save defaults</button></div>
+        </div></div>
+    </div>`;
+}
+function wireSuperModules(){
+  const sn=$("#mod_savenames"); if(sn) sn.onclick=async()=>{
+    const map={}; $$(".tabname").forEach(i=>{ const v=i.value.trim(); if(v) map[i.dataset.tabid]=v; });
+    DB.tabLabels=map; logAct("Renamed tabs","Super Admin", Object.keys(map).length+" custom name(s)");
+    await save(); buildNav(); VIEWS.superadmin(); toast("Tab names saved","ok");
+  };
+  const sd=$("#mod_savedefaults"); if(sd) sd.onclick=async()=>{
+    DB.defaults={ currency:$("#df_curr").value, unit:$("#df_unit").value, reorder:Number($("#df_reorder").value||0)||0, cmPrice:Number($("#df_cm").value||0)||0 };
+    logAct("Set module defaults","Super Admin","");
+    await save(); VIEWS.superadmin(); toast("Module defaults saved","ok");
+  };
 }
 function roleTabsEdit(key){
   const rl=(DB.roles||[]).find(r=>r.key===key); if(!rl) return;
