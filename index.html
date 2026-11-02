@@ -1785,6 +1785,7 @@ function editMaterial(id, presetPo){
   const poInit = m ? m.poId : (presetPo||"");
   const poLocked = !!presetPo;
   const poRef = poByNumber(poInit);
+  const multi = !id && !poLocked;   // a new order can be split across several POs + general stock
   const supOptions = `<option value="">Unassigned</option>`+DB.suppliers.map(s=>`<option value="${s.id}" ${m&&m.supplierId===s.id?"selected":""}>${esc(s.name)}</option>`).join("")+`<option value="__new__">+ Add new supplier…</option>`;
   const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${poInit===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
   const omn0 = m ? (m.omn || nextOMN()) : nextOMN();
@@ -1809,12 +1810,27 @@ function editMaterial(id, presetPo){
         <span><b>Order #</b> &nbsp;<span class="mono strong">${esc(omn0)}</span></span>
         <span class="muted" style="font-size:11.5px">auto-generated</span>
         <input type="hidden" id="mat_omn" value="${esc(omn0)}"></div>
+      ${multi ? `
+      <label class="fld"><span class="lab">Allocate this order to *</span>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:2;min-width:180px">
+            <input id="alloc_search" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
+            <select id="alloc_po"><option value="">— select PO —</option>${poOptions}</select>
+          </div>
+          <input id="alloc_qty" type="number" min="0" placeholder="qty" style="flex:1;min-width:90px">
+          <button type="button" class="btn sm primary" id="alloc_add">+ Add PO</button>
+          <button type="button" class="btn sm" id="alloc_addstock" title="Order extra for general stock, not tied to any PO">+ General stock</button>
+        </div>
+      </label>
+      <div id="alloc_list" style="margin-top:2px"></div>
+      <div class="stat-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span class="muted" style="font-size:12.5px">Total ordered</span><span class="strong" id="alloc_total">0</span></div>
+      ` : `
       <label class="fld"><span class="lab">For PO *</span>
         ${poLocked
           ? `<input value="${esc((poRef?poRef.poNumber:'')+' · '+(poRef?poRef.garment:''))}" disabled><input type="hidden" id="mat_po" value="${esc(poInit)}">`
           : `<input id="mat_posearch" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px"><select id="mat_po"><option value="">— select PO —</option>${poOptions}</select>`}
       </label>
-      <div id="mat_poinfo" class="notice" style="display:none;margin-top:0"></div>
+      <div id="mat_poinfo" class="notice" style="display:none;margin-top:0"></div>`}
       <div class="row2">
         <label class="fld"><span class="lab">Source *</span><select id="mat_source">
           <option value="purchase" ${source0==="purchase"?"selected":""}>Purchase — order new</option>
@@ -1838,8 +1854,8 @@ function editMaterial(id, presetPo){
         <button type="button" class="btn sm" id="mat_newsupcancel">Cancel</button>
       </div>
       <div class="row3">
-        <label class="fld"><span class="lab">Qty per garment</span><input id="mat_qpg" type="number" step="0.001" min="0" value="${m&&m.qtyPerGarment!=null?m.qtyPerGarment:''}"></label>
-        <label class="fld"><span class="lab">Total required *</span><input id="mat_total" type="number" min="0" value="${m&&m.totalQty!=null?m.totalQty:''}"></label>
+        <label class="fld" id="mat_qpgfld" ${multi?'style="display:none"':''}><span class="lab">Qty per garment</span><input id="mat_qpg" type="number" step="0.001" min="0" value="${m&&m.qtyPerGarment!=null?m.qtyPerGarment:''}"></label>
+        <label class="fld" id="mat_totalfld" ${multi?'style="display:none"':''}><span class="lab">Total required *</span><input id="mat_total" type="number" min="0" value="${m&&m.totalQty!=null?m.totalQty:''}"></label>
         <label class="fld"><span class="lab">Unit</span><select id="mat_unit">${unitOpts}</select></label>
       </div>
       <div class="row3" id="mat_costrow">
@@ -1877,11 +1893,50 @@ function editMaterial(id, presetPo){
     poSel.addEventListener("change",()=>{ poSel.size=1; showPoInfo(); });
   }
   showPoInfo();
+
+  // ---- multi-PO allocation (new orders can be split across several POs + general stock) ----
+  let ALLOC=[];
+  function allocTotal(){ return ALLOC.reduce((a,x)=>a+Number(x.qty||0),0); }
+  function allocUnit(){ const u=$("#mat_unit"); return u?u.value:""; }
+  function renderAlloc(){
+    const list=$("#alloc_list"); if(!list) return;
+    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>`<div class="stat-line" style="padding:5px 0"><span>${x.genStock?'<span class="pill p-green" style="padding:1px 7px">General stock</span>':esc(x.label)} — <b>${num(x.qty)}</b> ${esc(allocUnit())}</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`).join("")
+      : `<div class="muted" style="font-size:12px;padding:4px 0">No targets yet — pick a PO + qty and “Add PO”, or add general stock.</div>`;
+    const tot=$("#alloc_total"); if(tot) tot.textContent=num(allocTotal())+" "+esc(allocUnit());
+    list.querySelectorAll("[data-ai]").forEach(b=> b.onclick=()=>{ ALLOC.splice(Number(b.dataset.ai),1); renderAlloc(); upd(); });
+  }
+  if(multi){
+    const aSearch=$("#alloc_search"), aSel=$("#alloc_po"), aQty=$("#alloc_qty"), unitSel=$("#mat_unit");
+    aSearch.oninput=()=>{ const q=aSearch.value.trim().toLowerCase(); const cur=aSel.value;
+      const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+poBody(p)+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+      aSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+      aSel.size=q&&matches.length?Math.min(8,matches.length+1):1;
+    };
+    aSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(aSel.options).filter(o=>o.value); if(opts.length===1){ aSel.value=opts[0].value; aSel.size=1; } } };
+    aSel.addEventListener("change",()=>{ aSel.size=1; });
+    $("#alloc_add").onclick=()=>{
+      const pid=aSel.value, qv=Number(aQty.value||0);
+      if(!pid){ toast("Pick a PO to allocate to","warn"); return; }
+      if(qv<=0){ toast("Enter the qty for this PO","warn"); return; }
+      if(ALLOC.some(x=>x.poId===pid)){ toast("That PO is already in the list — remove it to change the qty","warn"); return; }
+      const p=poByNumber(pid);
+      ALLOC.push({poId:pid, label:(p?p.poNumber+" · "+p.garment:pid), qty:qv});
+      aQty.value=""; aSearch.value=""; aSel.innerHTML=`<option value="">— select PO —</option>`+poOptions; aSel.size=1; renderAlloc(); upd();
+    };
+    $("#alloc_addstock").onclick=()=>{
+      const qv=Number(aQty.value||0); if(qv<=0){ toast("Enter the qty for general stock","warn"); return; }
+      ALLOC.push({genStock:true, label:"General stock (no PO)", qty:qv});
+      aQty.value=""; renderAlloc(); upd();
+    };
+    if(unitSel) unitSel.addEventListener("change",renderAlloc);
+    renderAlloc();
+  }
+
   const curS=$("#mat_curr"), costE=$("#mat_cost"), fxE=$("#mat_fx"), fxRow=$("#mat_fxrow"), fxHint=$("#mat_fxhint"), totalE=$("#mat_total");
   function usdUnit(){ const c=curS.value, p=Number(costE.value||0), r=Number(fxE.value||0); return (c==="LKR") ? (r>0?p/r:0) : p; }
   function upd(){
     const c=curS.value; if(fxRow) fxRow.style.display=c==="LKR"?"":"none";
-    const u=usdUnit(), tot=Number(totalE.value||0);
+    const u=usdUnit(), tot=multi?allocTotal():Number(totalE.value||0);
     if(c==="LKR"){ const p=Number(costE.value||0), r=Number(fxE.value||0); fxHint.style.display=""; fxHint.innerHTML=r>0?`≈ <b>${money(u)}</b> per unit (stored in US$) · Rs ${num(p)} ÷ ${num(r)}`:`Enter the exchange rate to convert Rs ${num(p)} to US$`; }
     else fxHint.style.display="none";
     $("#mat_est").textContent=money(u*tot);
@@ -1933,8 +1988,6 @@ function editMaterial(id, presetPo){
   if(source0==="stock" && m && m.stockItemId){ const it=DB.inventory.find(x=>x.id===m.stockItemId); if(it){ stockInfo.style.display="block"; stockInfo.innerHTML=`<b>${esc(it.item)}</b>${it.color&&it.color!=="—"?" · "+esc(it.color):""} — available <b>${num(invBalance(it))} ${esc(it.unit||"")}</b> in stock · unit cost ${money(it.unitPrice)}.`; } }
 
   $("#mat_save").onclick=async()=>{
-    const poId=$("#mat_po").value;
-    if(!poId){ toast("Select the PO this material is for","warn"); return; }
     const source=srcSel.value==="stock"?"stock":"purchase";
     let stockItemId="";
     if(source==="stock"){
@@ -1942,16 +1995,38 @@ function editMaterial(id, presetPo){
       if(!stockItemId){ toast("Pick the stock item this material comes from","warn"); return; }
     }
     const material=$("#mat_material").value.trim(); if(!material){ toast("Enter the material name","warn"); return; }
-    const totalQty=Number(totalE.value||0); if(totalQty<=0){ toast("Enter the total required quantity","warn"); return; }
     const curr=curS.value==="LKR"?"LKR":"USD"; const costOrig=Number(costE.value||0), fx=Number(fxE.value||0);
     let unitCost=costOrig; if(source==="purchase" && curr==="LKR"){ if(fx>0){ unitCost=costOrig/fx; } else { toast("Enter the exchange rate (Rs per US$) for an LKR cost","warn"); return; } }
     const supVal = $("#mat_sup").value==="__new__" ? "" : $("#mat_sup").value;
-    const rec={ poId, omn:($("#mat_omn")?$("#mat_omn").value:"")||(m&&m.omn)||nextOMN(), material, type:$("#mat_type").value, color:$("#mat_color").value.trim(),
-      unit:$("#mat_unit").value, qtyPerGarment:Number($("#mat_qpg").value||0), totalQty,
-      supplierId:supVal, unitCost,
+    // shared fields for every line in this order
+    const shared={ material, type:$("#mat_type").value, color:$("#mat_color").value.trim(),
+      unit:$("#mat_unit").value, supplierId:supVal, unitCost,
       costCurr:source==="stock"?"USD":curr, costOrig:source==="stock"?unitCost:costOrig, fxRate:(source==="purchase"&&curr==="LKR")?fx:0,
       source, stockItemId,
       status:source==="stock"?"In Stock":$("#mat_status").value, eta:source==="stock"?"":$("#mat_eta").value };
+
+    if(multi){
+      // one order (shared OMN) split across several POs and/or general stock
+      if(!ALLOC.length){ toast("Add at least one PO or general-stock allocation","warn"); return; }
+      const omn=($("#mat_omn")?$("#mat_omn").value:"")||nextOMN();
+      ALLOC.forEach(a=>{
+        DB.bom.push({id:uid("bom"), poId:a.genStock?"":a.poId, genStock:!!a.genStock, omn,
+          ...shared, qtyPerGarment:0, totalQty:Number(a.qty||0)});
+      });
+      const spread=ALLOC.map(a=>(a.genStock?"stock":(poByNumber(a.poId)||{}).poNumber||"PO")+" "+num(a.qty)).join(" · ");
+      logAct(source==="stock"?"Planned material from stock":"Ordered material","Materials", omn+" · "+material+" · "+num(allocTotal())+" "+shared.unit+" → "+spread);
+      await save(); closeModal();
+      VIEWS.materials();
+      toast("Order "+omn+" added — "+ALLOC.length+" allocation"+(ALLOC.length===1?"":"s"),"ok");
+      return;
+    }
+
+    // single PO (edit, or adding from a PO screen)
+    const poId=$("#mat_po").value;
+    if(!poId){ toast("Select the PO this material is for","warn"); return; }
+    const totalQty=Number(totalE.value||0); if(totalQty<=0){ toast("Enter the total required quantity","warn"); return; }
+    const rec={ poId, omn:($("#mat_omn")?$("#mat_omn").value:"")||(m&&m.omn)||nextOMN(),
+      ...shared, qtyPerGarment:Number($("#mat_qpg").value||0), totalQty };
     if(id){ Object.assign(m,rec); } else { DB.bom.push({id:uid("bom"),...rec}); }
     const pr=poByNumber(poId);
     logAct(id?"Edited material":(source==="stock"?"Planned material from stock":"Ordered material"),"Materials", (pr?pr.poNumber+" · ":"")+material+" · "+num(totalQty)+" "+rec.unit+(source==="stock"?" (from stock)":""));
@@ -1983,7 +2058,7 @@ VIEWS.materials=function(){
       ? `${pill("From stock","p-green")}${stockIt?`<div class="muted" style="font-size:11px">${esc(stockIt.item)}${stockIt.color&&stockIt.color!=="—"?" · "+esc(stockIt.color):""}</div>`:""}`
       : `<select onchange="setMatStatus('${m.id}',this.value)" style="width:130px;padding:5px 8px;font-size:12px">${MAT_STATUS.map(s=>`<option ${s===m.status?"selected":""}>${s}</option>`).join("")}</select>`;
     return `<tr><td>${m.omn?`<div class="mono" style="font-size:11px;color:var(--chalk)">${esc(m.omn)}</div>`:""}<div class="strong">${esc(m.material)}</div><div class="muted" style="font-size:12px">${esc(m.type)} · ${esc(m.color||"")}</div></td>
-      <td>${m.po?`<span class="linklike" onclick="openPO('${m.poId}')">${esc(m.po.poNumber)}</span>`:"—"}</td>
+      <td>${m.po?`<span class="linklike" onclick="openPO('${m.poId}')">${esc(m.po.poNumber)}</span>`:(m.genStock?`<span class="pill p-green" style="padding:1px 7px">General stock</span>`:"—")}</td>
       <td class="num">${num(m.totalQty)} ${esc(m.unit)}</td>
       <td>${m.source==="stock"?'<span class="muted">From stock</span>':esc(supplierName(m.supplierId))}</td>
       <td class="num">${money(Number(m.totalQty||0)*Number(m.unitCost||0))}${note}</td>
@@ -2000,7 +2075,7 @@ VIEWS.materials=function(){
       <div class="kpi k-thread"><div class="klab">Open lines</div><div class="kval">${DB.bom.length-received}</div><div class="ksub">to order / in transit</div></div>
       <div class="kpi k-green"><div class="klab">Material cost</div><div class="kval" style="font-size:22px">${money(totCost)}</div><div class="ksub">estimated landed (USD)${fromStockCount?` · ${fromStockCount} from stock`:""}</div></div>
     </div>
-    <div class="notice">Plan every material here against its PO. <b>Purchase</b> lines run <b>Required → Ordered → In Transit → Received</b>; a <b>From existing stock</b> line draws from inventory (no ordering). Costs in US$ or Rs — Rs converts to US$ with the exchange rate.</div>
+    <div class="notice">Order one material against <b>several POs at once</b> (e.g. labels or hangers) — “+ Order material” lets you split the qty across POs and add a <b>General stock</b> bucket for extra, PO-free stock. All lines share one order number (OMN) and are received together. <b>Purchase</b> lines run <b>Required → Ordered → In Transit → Received</b>; a <b>From existing stock</b> line draws from inventory. Costs in US$ or Rs — Rs converts to US$ with the exchange rate.</div>
     <div class="toolbar">
       <div class="search"><span class="ico">⌕</span><input id="matq" placeholder="Search material, PO, colour, supplier…" value="${esc(MAT_SEARCH)}"></div>
       <div class="filterpills" style="margin-left:auto">${tabs.map(t=>`<div class="fp ${FILTERS.mat===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div>
@@ -3723,6 +3798,26 @@ function nextOMN(){
 }
 /* open material orders (not yet received, excluding from-stock lines) for receiving into inventory */
 function openMaterialOrders(){ return (DB.bom||[]).filter(m=>m.source!=="stock" && m.status!=="Received"); }
+/* group open order lines by OMN — one physical order can span several POs (+ general stock) */
+function openMaterialOrderGroups(){
+  const open=openMaterialOrders();
+  const by={};
+  open.forEach(m=>{ const k=(m.omn||"").trim() || ("_"+m.id); (by[k]=by[k]||[]).push(m); });
+  return Object.values(by).map(lines=>{
+    const f=lines[0];
+    return { omn:(f.omn||"").trim(), ids:lines.map(x=>x.id), lines,
+      material:f.material, color:f.color, supplierId:f.supplierId, unit:f.unit,
+      costCurr:f.costCurr, costOrig:f.costOrig, unitCost:f.unitCost, fxRate:f.fxRate,
+      totalQty:lines.reduce((a,x)=>a+Number(x.totalQty||0),0),
+      poCount:lines.filter(x=>x.poId).length,
+      hasStock:lines.some(x=>!x.poId) };
+  });
+}
+function resolveOmnGroup(val){
+  if(!val) return null;
+  const gs=openMaterialOrderGroups();
+  return gs.find(g=>g.omn && g.omn===val) || gs.find(g=>g.ids.includes(val)) || null;
+}
 function editInv(id){
   const df=DB.defaults||{};
   const r=id?DB.inventory.find(x=>x.id===id):{category:"Fabric",unit:df.unit||"yds",date:today(),code:nextInvCode(),reorder:(df.reorder!=null&&df.reorder!==0?df.reorder:"")};
@@ -3732,7 +3827,7 @@ function editInv(id){
   rec.invPrice = (r.priceCurr==="LKR") ? (r.priceOrig!=null?r.priceOrig:"") : (r.unitPrice!=null?r.unitPrice:"");
   rec.omnRef = "";
   const moOptions = [{value:"",label:"— Direct GRN (no material order) —"}].concat(
-    openMaterialOrders().map(mo=>({value:mo.id, label:(mo.omn?mo.omn+" · ":"")+mo.material+(mo.color?" · "+mo.color:"")+" · "+supplierName(mo.supplierId)+" · ordered "+num(mo.totalQty)+" "+(mo.unit||"")})));
+    openMaterialOrderGroups().map(g=>({value:g.omn||g.ids[0], label:(g.omn?g.omn+" · ":"")+g.material+(g.color?" · "+g.color:"")+" · "+supplierName(g.supplierId)+" · ordered "+num(g.totalQty)+" "+(g.unit||"")+(g.poCount>1||(g.poCount&&g.hasStock)?" · "+g.poCount+" PO"+(g.poCount===1?"":"s")+(g.hasStock?" + stock":""):g.hasStock?" · general stock":"")})));
   openModal({title:id?"Edit inventory item":"New inventory item (GRN)", wide:true, record:rec, submitLabel:id?"Save item":"Add item",
     fields:[
       ...(id?[]:[{name:"omnRef",label:"Receive against material order (OMN)",type:"select",options:moOptions}]),
@@ -3767,8 +3862,8 @@ function editInv(id){
       if(curr==="LKR"){ if(fx>0){ usd=invPrice/fx; } else { toast("Enter the exchange rate (Rs per US$) for an LKR invoice","warn"); return; } }
       d.unitPrice=usd; d.priceCurr=curr; d.priceOrig=invPrice; d.fxRate=curr==="LKR"?fx:0;
       delete d.invPrice; delete d.curr;
-      // if received against a material order, link it and mark that order Received
-      if(d.omnRef){ const mo=DB.bom.find(x=>x.id===d.omnRef); if(mo){ mo.status="Received"; d.omnRefId=mo.id; d.omn=mo.omn||""; } }
+      // if received against a material order, mark every line of that order (across all its POs) Received
+      if(d.omnRef){ const g=resolveOmnGroup(d.omnRef); if(g){ g.ids.forEach(lid=>{ const mo=DB.bom.find(x=>x.id===lid); if(mo) mo.status="Received"; }); d.omnRefId=g.ids[0]; d.omn=g.omn||""; } }
       delete d.omnRef;
       // code must be unique; auto-generate if left blank
       let codeVal=(d.code||"").trim();
@@ -3802,23 +3897,24 @@ function editInv(id){
     const hint=document.createElement("div"); hint.className="notice"; hint.style.cssText="grid-column:1/-1;margin-top:-4px;display:none";
     sel.closest(".fld").insertAdjacentElement("afterend",hint);
     sel.onchange=()=>{
-      const mo=DB.bom.find(x=>x.id===sel.value);
-      if(!mo){ hint.style.display="none"; return; }
-      const po=poByNumber(mo.poId);
-      if(get("item")) get("item").value=mo.material||"";
-      if(get("color")) get("color").value=mo.color||"";
-      if(get("supplier")) get("supplier").value=supplierName(mo.supplierId)||"";
-      const u=get("unit"); if(u && mo.unit && Array.from(u.options).some(o=>o.value===mo.unit)) u.value=mo.unit;
-      if(get("po")) get("po").value=po?po.poNumber:"";
-      if(get("curr")) get("curr").value=mo.costCurr||"USD";
-      if(get("invPrice")) get("invPrice").value=(mo.costCurr==="LKR"?(mo.costOrig!=null?mo.costOrig:""):(mo.unitCost!=null?mo.unitCost:""));
-      if(get("fxRate")) get("fxRate").value=mo.fxRate||"";
+      const g=resolveOmnGroup(sel.value);
+      if(!g){ hint.style.display="none"; return; }
+      const poLines=g.lines.filter(x=>x.poId);
+      if(get("item")) get("item").value=g.material||"";
+      if(get("color")) get("color").value=g.color||"";
+      if(get("supplier")) get("supplier").value=supplierName(g.supplierId)||"";
+      const u=get("unit"); if(u && g.unit && Array.from(u.options).some(o=>o.value===g.unit)) u.value=g.unit;
+      if(get("po")) get("po").value=poLines.map(x=>{const p=poByNumber(x.poId);return p?p.poNumber:"";}).filter(Boolean).join(", ");
+      if(get("received") && !get("received").value) get("received").value=g.totalQty||"";
+      if(get("curr")) get("curr").value=g.costCurr||"USD";
+      if(get("invPrice")) get("invPrice").value=(g.costCurr==="LKR"?(g.costOrig!=null?g.costOrig:""):(g.unitCost!=null?g.unitCost:""));
+      if(get("fxRate")) get("fxRate").value=g.fxRate||"";
       const cs=get("curr"); if(cs) cs.dispatchEvent(new Event("change"));
       const ip2=get("invPrice"); if(ip2) ip2.dispatchEvent(new Event("input"));
-      const orderedPrice = mo.costCurr==="LKR" ? ("Rs "+num(mo.costOrig)+" @ "+num(mo.fxRate)+" ≈ "+money(mo.unitCost)) : money(mo.unitCost);
-      const recvd = get("received"); if(recvd && !recvd.value) recvd.focus();
+      const orderedPrice = g.costCurr==="LKR" ? ("Rs "+num(g.costOrig)+" @ "+num(g.fxRate)+" ≈ "+money(g.unitCost)) : money(g.unitCost);
+      const spread = poLines.map(x=>{const p=poByNumber(x.poId);return (p?p.poNumber:"PO")+" "+num(x.totalQty);}).concat(g.hasStock?["stock "+num(g.lines.filter(x=>!x.poId).reduce((a,x)=>a+Number(x.totalQty||0),0))]:[]);
       hint.style.display="block";
-      hint.innerHTML=`<b>Order ${esc(mo.omn||"")}</b> — ordered <b>${num(mo.totalQty)} ${esc(mo.unit||"")}</b> @ <b>${orderedPrice}</b>${po?` · PO ${esc(po.poNumber)}`:""}.<br>Details auto-filled. <b>Check the price & received qty</b> against the invoice, then Add. This marks the order <b>Received</b>.`;
+      hint.innerHTML=`<b>Order ${esc(g.omn||"")}</b> — ordered <b>${num(g.totalQty)} ${esc(g.unit||"")}</b> @ <b>${orderedPrice}</b>${spread.length>1?`<br>Split: ${esc(spread.join(" · "))}`:poLines[0]?` · PO ${esc((poByNumber(poLines[0].poId)||{}).poNumber||"")}`:""}.<br>Details auto-filled. <b>Check price & received qty</b> against the invoice, then Add. This receives the <b>whole order</b> (all ${g.ids.length} line${g.ids.length===1?"":"s"}) and marks it <b>Received</b>.`;
     };
   })();
 }
