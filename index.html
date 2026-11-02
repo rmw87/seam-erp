@@ -402,15 +402,28 @@ function subscribeFirebase(){
   }, err=>{ console.error("Firestore listen failed:", err); });
 }
 
-/* ---- live presence: each signed-in device checks in; super admin sees who's online ---- */
-let PRESENCE_TIMER=null;
+/* ---- live presence: every signed-in device (any role) checks in; super admin sees who's online ---- */
+let PRESENCE_TIMER=null, PRESENCE_WIRED=false, LAST_BEAT=0;
 function presenceDoc(){ return firebase.firestore().collection("seam_erp").doc("presence"); }
-async function beatPresence(){
+async function beatPresence(force){
   if(!FB_ON || !CURRENT) return;
-  try{ await presenceDoc().set({ [CURRENT.id]:{ u:CURRENT.username, n:CURRENT.name||CURRENT.username, r:CURRENT.role, sa:!!CURRENT.superadmin, ts:Date.now() } }, {merge:true}); }
+  const now=Date.now();
+  if(!force && now-LAST_BEAT<15000) return;   // throttle: at most one write / 15s
+  LAST_BEAT=now;
+  try{ await presenceDoc().set({ [CURRENT.id]:{ u:CURRENT.username, n:CURRENT.name||CURRENT.username, r:CURRENT.role, sa:!!CURRENT.superadmin, ts:now } }, {merge:true}); }
   catch(e){ /* presence is best-effort */ }
 }
-function startPresence(){ if(!FB_ON) return; beatPresence(); if(PRESENCE_TIMER) clearInterval(PRESENCE_TIMER); PRESENCE_TIMER=setInterval(beatPresence, 45000); }
+function startPresence(){
+  if(!FB_ON) return;
+  beatPresence(true);
+  if(PRESENCE_TIMER) clearInterval(PRESENCE_TIMER);
+  PRESENCE_TIMER=setInterval(()=>beatPresence(true), 40000);   // steady heartbeat, even in background
+  if(!PRESENCE_WIRED){
+    PRESENCE_WIRED=true;
+    document.addEventListener("visibilitychange",()=>{ if(!document.hidden) beatPresence(true); });
+    window.addEventListener("focus",()=>beatPresence(true));
+  }
+}
 function stopPresence(){ if(PRESENCE_TIMER){ clearInterval(PRESENCE_TIMER); PRESENCE_TIMER=null; } }
 
 /* Prefer shared Firestore (when configured), else Claude's built-in storage,
@@ -1024,6 +1037,7 @@ function go(route){
     route=first;
   }
   ROUTE=route; buildNav(); VIEWS[route] ? VIEWS[route]() : VIEWS.dashboard(); $(".main").scrollTo({top:0});
+  beatPresence();   // any navigation marks this user active (throttled)
 }
 
 function setHead(crumb,title,actions=""){ $("#crumb").textContent=crumb; $("#title").textContent=title; $("#topActions").innerHTML=actions; }
@@ -4913,7 +4927,7 @@ function wireSuperGuides(){
 let SUPER_ONLINE_TIMER=null;
 function superOnlineHTML(){
   if(!FB_ON) return `<div class="notice">Online presence needs the shared cloud database to be on.</div>`;
-  return `<div class="notice">Users active in the last 2 minutes. Each signed-in device checks in about every 45 seconds. <button class="btn sm" id="onlineRefresh" style="margin-left:8px">Refresh</button></div>
+  return `<div class="notice">Everyone signed in right now — <b>all roles</b>, active in the last ~3 minutes. Each device checks in automatically. <b>Note:</b> a user only appears after their app has loaded this version — ask staff to reopen/refresh the app once. <button class="btn sm" id="onlineRefresh" style="margin-left:8px">Refresh</button></div>
     <div class="panel"><div class="panel-head"><h3>Online now</h3><div class="meta" id="onlineMeta">loading…</div></div>
     <div class="panel-body" id="onlineBody" style="overflow-x:auto"><div class="muted" style="padding:20px;text-align:center">Loading…</div></div></div>`;
 }
@@ -4923,7 +4937,7 @@ async function loadOnline(){
   try{
     const snap=await presenceDoc().get();
     const data=snap.exists?(snap.data()||{}):{};
-    const now=Date.now(), win=120000;
+    const now=Date.now(), win=180000;
     let rows=Object.entries(data).map(([id,p])=>({id,...p}))
       .filter(p=>p&&p.ts&&(now-p.ts)<win)
       .filter(p=>DB.users.some(u=>u.id===p.id && u.active))
