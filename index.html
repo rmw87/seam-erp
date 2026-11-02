@@ -2126,6 +2126,61 @@ const GUIDES = [
       <li>Check the <b>price</b> and <b>received qty</b> against the invoice, then <b>Add</b>.</li>
     </ol>
     <p style="margin:0 0 6px">This receives the <b>whole order</b> — every PO line + general stock — in one step and marks it <b>Received</b>, adding it to stock.</p>
+    `},
+  { id:"poToShipment", icon:"🚢", title:"PO to shipment — full workflow",
+    summary:"The whole journey: import a PO, plan materials, run production, and complete the export shipment.",
+    html:`
+    <div class="notice" style="margin-top:0">This is the end-to-end flow — from the moment a buyer's PO arrives to shipping the goods out. Each step lives in its own tab on the left menu.</div>
+
+    <h3 style="margin:14px 0 6px">Step 1 · Add the buyer</h3>
+    <p style="margin:0 0 10px">Open <b>Buyers → + New buyer</b> and add the customer (name, country, contact) if they aren't there yet. Every PO is linked to a buyer.</p>
+
+    <h3 style="margin:14px 0 6px">Step 2 · Import the PO</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li>Go to <b>Purchase Orders</b>.</li>
+      <li>Click <b>⤓ Import PO (PDF)</b> to pull the order in from the buyer's PO document, or <b>+ New PO</b> to type it in by hand.</li>
+      <li>Check the PO number, style, garment, quantity, size breakdown, unit price, currency and delivery date.</li>
+    </ul>
+    <div class="notice" style="margin:0 0 10px"><b>Re-importing the same PO number</b> updates it as a <b>revision</b> (rev count goes up) instead of making a duplicate — use this when the buyer changes the order.</div>
+
+    <h3 style="margin:14px 0 6px">Step 3 · Open the PO to see everything</h3>
+    <p style="margin:0 0 10px">Click any PO number (it's clickable everywhere in the app) to open its full report — production stage progress, Bill of Materials, and booked shipments, all in one place.</p>
+
+    <h3 style="margin:14px 0 6px">Step 4 · Plan &amp; order the materials</h3>
+    <p style="margin:0 0 10px">Go to <b>Materials Planning → + Order material</b> and plan every fabric, trim, label and packaging item the PO needs. One order can be split across several POs. (See the <b>“Ordering materials”</b> guide for the full detail.) Each PO's Bill of Materials fills up as you plan.</p>
+
+    <h3 style="margin:14px 0 6px">Step 5 · Receive materials &amp; issue to the PO</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li>When goods arrive: <b>Inventory → + Add item → Receive against material order (OMN)</b>, check price &amp; qty, then Add. Stock goes up.</li>
+      <li>To send fabric/trims to production for this PO: <b>Inventory → − Fabric Issue</b>, pick the PO, add the lines. The PO's Bill of Materials then shows <b>Required / Issued / Balance</b>, so you can see what's still to issue.</li>
+    </ul>
+
+    <h3 style="margin:14px 0 6px">Step 6 · Run production through the stages</h3>
+    <p style="margin:0 0 4px">Open <b>Production Stages</b> and move the PO's quantity through the five seam stages:</p>
+    <p style="margin:0 0 10px"><b>Cutting → Sewing → Finishing → Quality Check → Packing.</b> Update each stage's quantity as work is done — the progress bar fills toward the order qty.</p>
+
+    <h3 style="margin:14px 0 6px">Step 7 · Log daily output</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li><b>Daily Production → + Add production:</b> log pieces made each day, per line, against the PO (with the CM price). The “Production progress by PO” panel shows made vs balance.</li>
+      <li><b>Sub Contract → + Add production:</b> use this for work sent to a sub-factory, the same way.</li>
+    </ul>
+
+    <h3 style="margin:14px 0 6px">Step 8 · Record any excess (optional)</h3>
+    <p style="margin:0 0 10px">Extra pieces cut over the PO qty go to <b>Finished Goods → + Add finished goods</b>, so they're tracked as stock you can sell later.</p>
+
+    <h3 style="margin:14px 0 6px">Step 9 · Watch the WIP</h3>
+    <p style="margin:0 0 10px">The <b>WIP Report</b> shows every PO's work-in-progress — cut, sewn, packed, balance — so nothing is missed before shipment. Use its filters to focus on one buyer or period.</p>
+
+    <h3 style="margin:14px 0 6px">Step 10 · Book the export shipment</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li>Go to <b>Export &amp; Shipment → + Book shipment</b> (or “+ Book shipment” right inside the PO).</li>
+      <li>Enter invoice no., quantity shipped, mode (Sea / Air), load &amp; discharge ports, B/L or AWB no., ETA and status.</li>
+      <li>Update the status as it moves: <b>Booked → In Transit → Delivered</b>.</li>
+    </ul>
+
+    <h3 style="margin:14px 0 6px">Step 11 · Close the PO</h3>
+    <p style="margin:0 0 6px">Once the full quantity is shipped, set the PO's status to <b>Completed</b>. Completed POs drop off the active badges but stay searchable, and still show in Production Stages and reports for history.</p>
+    <div class="notice" style="margin:10px 0 0">Quick path: <b>Buyer → Import PO → Materials Planning → Inventory (receive + issue) → Production Stages → Daily Production → Export &amp; Shipment → Completed.</b></div>
     `}
 ];
 function userGuides(){
