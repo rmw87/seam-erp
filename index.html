@@ -3005,16 +3005,7 @@ VIEWS.settings=function(){
           ${isSuperAdmin()?`<button class="btn" onclick="cloudBackups()">☁ Cloud backups</button>`:""}
         </div>
         <div class="muted" style="font-size:12px;margin-top:10px">Tip: save the downloaded file into your <b>OneDrive folder</b> (e.g. OneDrive\\Seam-Backups) — OneDrive then uploads it to the cloud automatically. The dashboard reminds you once a day.</div>
-      </div></div>
-
-    ${isSuperAdmin()?`<div class="panel"><div class="panel-head"><h3>Start fresh</h3></div>
-      <div class="panel-pad">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap">
-          <div style="max-width:620px"><div class="strong">Clear all demo / sample data</div>
-            <div class="muted" style="font-size:13px;margin-top:3px">Removes every buyer, purchase order, material line, shipment, daily-production entry, inventory item, cheque record and the Recycle Bin — leaving an empty workspace for your real data. <b>User accounts and production lines are kept.</b> A backup is saved first.</div></div>
-          <button class="btn danger" onclick="clearAllData()">Clear all data</button>
-        </div>
-      </div></div>`:""}`;
+      </div></div>`;
 };
 /* ---- manual backup: download current data, restore from a file ---- */
 function backupDoneToday(){ try{ return localStorage.getItem("seam_backup_date")===today(); }catch(e){ return false; } }
