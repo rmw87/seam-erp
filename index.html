@@ -402,6 +402,17 @@ function subscribeFirebase(){
   }, err=>{ console.error("Firestore listen failed:", err); });
 }
 
+/* ---- live presence: each signed-in device checks in; super admin sees who's online ---- */
+let PRESENCE_TIMER=null;
+function presenceDoc(){ return firebase.firestore().collection("seam_erp").doc("presence"); }
+async function beatPresence(){
+  if(!FB_ON || !CURRENT) return;
+  try{ await presenceDoc().set({ [CURRENT.id]:{ u:CURRENT.username, n:CURRENT.name||CURRENT.username, r:CURRENT.role, sa:!!CURRENT.superadmin, ts:Date.now() } }, {merge:true}); }
+  catch(e){ /* presence is best-effort */ }
+}
+function startPresence(){ if(!FB_ON) return; beatPresence(); if(PRESENCE_TIMER) clearInterval(PRESENCE_TIMER); PRESENCE_TIMER=setInterval(beatPresence, 45000); }
+function stopPresence(){ if(PRESENCE_TIMER){ clearInterval(PRESENCE_TIMER); PRESENCE_TIMER=null; } }
+
 /* Prefer shared Firestore (when configured), else Claude's built-in storage,
    else the browser's localStorage, else memory. Sessions stay per-device. */
 async function rawGet(key){
@@ -945,6 +956,9 @@ const NAV = [
   {grp:"Super Admin", super:true, items:[
     {id:"superadmin",ico:"★",label:"Super Admin"},
   ]},
+  {grp:"Help", items:[
+    {id:"guides",ico:"❔",label:"Guides"},
+  ]},
   {grp:"Account", items:[
     {id:"account",ico:"◑",label:"My Account"},
   ]},
@@ -963,6 +977,7 @@ const CONTROLLABLE_TABS = ["dashboard","pos","buyers","inventory","materials","s
 const ALWAYS_ALLOWED = ["account"];
 function userCanSee(route){
   if(route==="issues") route="inventory";   // issue notes follow inventory access
+  if(route==="guides") return isSuperAdmin() || userGuides().length>0;   // per-user, granted by super admin
   if(SUPER_ROUTES.includes(route)) return isSuperAdmin();
   // delegated super-panel sections for non-super admins (controlled by the super admin)
   if(route==="auditview") return isAdmin() && !isSuperAdmin() && adminGrants().audit;
@@ -2035,6 +2050,95 @@ function editMaterial(id, presetPo){
     toast(id?"Material updated":"Material added","ok");
   };
 }
+
+/* ============================================================
+   IN-APP GUIDES  (super admin grants access per user)
+   ============================================================ */
+const GUIDES = [
+  { id:"orderMaterial", icon:"🧵", title:"Ordering materials",
+    summary:"Raise a material order, split it across several POs, and receive it into stock.",
+    html:`
+    <div class="notice" style="margin-top:0">Use <b>Materials Planning → + Order material</b> to plan and order fabric, trims, labels, hangers and packaging. One order can serve several POs at once.</div>
+
+    <h3 style="margin:14px 0 6px">1 · Order number (OMN)</h3>
+    <p style="margin:0 0 10px">Shown at the top, auto-generated (OM-0001, OM-0002…). You don't type anything. Every line in this order shares this number and is received together.</p>
+
+    <h3 style="margin:14px 0 6px">2 · Allocate this order to</h3>
+    <p style="margin:0 0 6px">Decide which POs the material is for:</p>
+    <ol style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li>Search a PO in the 🔍 box, then pick it from the list.</li>
+      <li>Type the <b>quantity</b> for that PO.</li>
+      <li>Click <b>+ Add PO</b> — it drops into the list below.</li>
+      <li>Repeat for more POs.</li>
+      <li>For extra stock not tied to any PO, type a qty and click <b>+ General stock</b>.</li>
+    </ol>
+    <p style="margin:0 0 10px"><b>Total ordered</b> at the bottom adds everything up. Ordering for a single PO? Just add that one PO.</p>
+    <div class="notice" style="margin:0 0 10px"><b>Example:</b> 1,000 hangers → PO-142080: 500, PO-141846: 300, General stock: 200. One OMN, three lines. Each PO's Bill of Materials gets its own share.</div>
+
+    <h3 style="margin:14px 0 6px">3 · Source</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li><b>Purchase — order new:</b> buying fresh from a supplier (the usual case).</li>
+      <li><b>From existing stock:</b> plan the material from stock you already hold — no ordering. Pick the stock item in the extra box that appears.</li>
+    </ul>
+
+    <h3 style="margin:14px 0 6px">4 · Material details</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li><b>Material:</b> the name — e.g. Cotton Jersey 180gsm, Woven label, Plastic hanger.</li>
+      <li><b>Type:</b> Fabric / Thread / Trim / Packaging / Other.</li>
+      <li><b>Colour / spec:</b> optional — e.g. Rich Black, size M.</li>
+      <li><b>Supplier:</b> pick one, or choose <b>+ Add new supplier…</b> to add one on the spot.</li>
+      <li><b>Unit:</b> pcs / kg / m / yd / cone / roll / gross / set.</li>
+    </ul>
+
+    <h3 style="margin:14px 0 6px">5 · Cost (purchase only)</h3>
+    <ul style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li><b>Invoice currency:</b> US$ or Rupees (LKR) — whichever the invoice is in.</li>
+      <li><b>Unit cost:</b> price per unit in that currency.</li>
+      <li><b>Exchange rate (Rs per US$):</b> shows only for LKR. The price is converted and stored in US$ (inventory is kept in US$).</li>
+    </ul>
+    <p style="margin:0 0 10px">The <b>Estimated line cost</b> = unit cost × total ordered, shown live.</p>
+
+    <h3 style="margin:14px 0 6px">6 · Status &amp; ETA (purchase only)</h3>
+    <p style="margin:0 0 10px"><b>Status:</b> Required → Ordered → In Transit → Received. <b>ETA:</b> the expected arrival date.</p>
+
+    <h3 style="margin:14px 0 6px">7 · Save</h3>
+    <p style="margin:0 0 10px">One line is created per allocated PO (plus general stock), all under the same OMN. Each PO's Bill of Materials is updated with its share.</p>
+
+    <h3 style="margin:14px 0 6px">8 · Receiving the goods</h3>
+    <p style="margin:0 0 4px">When the material arrives:</p>
+    <ol style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+      <li>Go to <b>Inventory → + Add item</b>.</li>
+      <li>At the top, pick the order under <b>Receive against material order (OMN)</b>. Details auto-fill.</li>
+      <li>Check the <b>price</b> and <b>received qty</b> against the invoice, then <b>Add</b>.</li>
+    </ol>
+    <p style="margin:0 0 6px">This receives the <b>whole order</b> — every PO line + general stock — in one step and marks it <b>Received</b>, adding it to stock.</p>
+    `}
+];
+function userGuides(){
+  if(isSuperAdmin()) return GUIDES.slice();
+  const ids=(CURRENT&&CURRENT.guides)||[];
+  return GUIDES.filter(g=>ids.includes(g.id));
+}
+let GUIDE_OPEN=null;
+function openGuide(id){ GUIDE_OPEN=id; VIEWS.guides(); }
+function closeGuide(){ GUIDE_OPEN=null; VIEWS.guides(); }
+VIEWS.guides=function(){
+  const list=userGuides();
+  if(!list.length){ setHead("Help","Guides",""); $("#view").innerHTML=`<div class="notice">No guides have been shared with your account yet.</div>`; return; }
+  if(GUIDE_OPEN){
+    const g=list.find(x=>x.id===GUIDE_OPEN);
+    if(g){ setHead("Help", g.title, `<button class="btn" onclick="closeGuide()">← All guides</button>`);
+      $("#view").innerHTML=`<div class="panel"><div class="panel-body" style="max-width:860px;line-height:1.55">${g.html}</div></div>`; return; }
+    GUIDE_OPEN=null;
+  }
+  setHead("Help","Guides","");
+  $("#view").innerHTML=`<div class="notice">Step-by-step help for using the system. Click a guide to open it.</div>
+    <div class="grid2">${list.map(g=>`<div class="panel" style="cursor:pointer" onclick="openGuide('${g.id}')">
+      <div class="panel-body"><div style="font-size:28px">${g.icon||"❔"}</div>
+        <div class="strong" style="font-size:16px;margin:6px 0 2px">${esc(g.title)}</div>
+        <div class="muted" style="font-size:13px">${esc(g.summary||"")}</div>
+        <div class="linklike" style="margin-top:10px">Open guide →</div></div></div>`).join("")}</div>`;
+};
 
 /* ---------- RAW MATERIAL & IMPORT ---------- */
 let MAT_SEARCH="";
@@ -4761,23 +4865,87 @@ function fmtTs(ts){ try{ return new Date(ts).toLocaleString(); }catch(e){ return
 
 VIEWS.superadmin=function(){
   if(!isSuperAdmin()){ go("dashboard"); return; }
-  const titles={log:"Activity Log",audit:"Data by User",users:"User Management",roles:"Roles & Access",visibility:"Feature Visibility",modules:"Tabs & Defaults",db:"Database Usage"};
+  if(SUPER_ONLINE_TIMER && SUPER_TAB.tab!=="online"){ clearInterval(SUPER_ONLINE_TIMER); SUPER_ONLINE_TIMER=null; }
+  const titles={log:"Activity Log",audit:"Data by User",online:"Online Now",users:"User Management",roles:"Roles & Access",visibility:"Feature Visibility",modules:"Tabs & Defaults",guides:"Guide Access",db:"Database Usage"};
   setHead("Super Admin", titles[SUPER_TAB.tab]||"Super Admin","");
-  const pills=[["log","Activity log"],["audit","By user"],["users","Users"],["roles","Roles & access"],["visibility","Visibility"],["modules","Tabs & defaults"],["db","Database"]]
+  const pills=[["log","Activity log"],["audit","By user"],["online","Online now"],["users","Users"],["roles","Roles & access"],["visibility","Visibility"],["modules","Tabs & defaults"],["guides","Guides access"],["db","Database"]]
     .map(([k,l])=>`<div class="fp ${SUPER_TAB.tab===k?"on":""}" data-st="${k}">${l}</div>`).join("");
   let bodyHTML="";
   if(SUPER_TAB.tab==="log") bodyHTML=superLogHTML();
   else if(SUPER_TAB.tab==="audit") bodyHTML=superUserAuditHTML();
+  else if(SUPER_TAB.tab==="online") bodyHTML=superOnlineHTML();
   else if(SUPER_TAB.tab==="users") bodyHTML=superUsersHTML();
   else if(SUPER_TAB.tab==="db") bodyHTML=superDbHTML();
   else if(SUPER_TAB.tab==="visibility") bodyHTML=superVisibilityHTML();
   else if(SUPER_TAB.tab==="modules") bodyHTML=superModulesHTML();
+  else if(SUPER_TAB.tab==="guides") bodyHTML=superGuidesHTML();
   else bodyHTML=superRolesHTML();
   $("#view").innerHTML=`<div class="toolbar"><div class="filterpills">${pills}</div></div>${bodyHTML}`;
   $$(".fp[data-st]").forEach(f=>f.onclick=()=>{ SUPER_TAB.tab=f.dataset.st; VIEWS.superadmin(); });
   if(SUPER_TAB.tab==="log") wireSuperLog();
   if(SUPER_TAB.tab==="modules") wireSuperModules();
+  if(SUPER_TAB.tab==="guides") wireSuperGuides();
+  if(SUPER_TAB.tab==="online") wireSuperOnline();
 };
+/* ---- Guide access by user (super admin grants which users see each guide) ---- */
+function superGuidesHTML(){
+  const users=DB.users.filter(u=>u.active && !u.superadmin);
+  const head=`<tr><th>User</th>${GUIDES.map(g=>`<th class="num">${esc(g.title)}</th>`).join("")}</tr>`;
+  const rows=users.length?users.map(u=>`<tr><td><div class="strong">${esc(u.name||u.username)}</div><div class="muted" style="font-size:12px">@${esc(u.username)} · ${esc(roleLabel(u.role))}</div></td>
+    ${GUIDES.map(g=>`<td class="num"><input type="checkbox" data-gu="${u.id}" data-gg="${g.id}" ${((u.guides||[]).includes(g.id))?"checked":""}></td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${GUIDES.length+1}" class="muted" style="text-align:center;padding:24px">No active users.</td></tr>`;
+  return `<div class="notice">Tick a guide to let that user see it under <b>Help → Guides</b> in their menu. You and other super admins always see all guides.</div>
+    <div class="panel"><div class="panel-head"><h3>Guide access by user</h3><div class="meta">${users.length} user${users.length===1?"":"s"} · ${GUIDES.length} guide${GUIDES.length===1?"":"s"}</div></div>
+    <div class="panel-body" style="overflow-x:auto"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function wireSuperGuides(){
+  document.querySelectorAll("[data-gu]").forEach(cb=> cb.onchange=async()=>{
+    const u=DB.users.find(x=>x.id===cb.dataset.gu); if(!u) return;
+    u.guides=Array.isArray(u.guides)?u.guides:[];
+    const gid=cb.dataset.gg;
+    if(cb.checked){ if(!u.guides.includes(gid)) u.guides.push(gid); } else { u.guides=u.guides.filter(x=>x!==gid); }
+    logAct("Changed guide access","Super Admin","@"+u.username+" · "+gid+" "+(cb.checked?"on":"off"));
+    await save();
+    if(CURRENT&&CURRENT.id===u.id) buildNav();
+  });
+}
+/* ---- Online now (live presence) ---- */
+let SUPER_ONLINE_TIMER=null;
+function superOnlineHTML(){
+  if(!FB_ON) return `<div class="notice">Online presence needs the shared cloud database to be on.</div>`;
+  return `<div class="notice">Users active in the last 2 minutes. Each signed-in device checks in about every 45 seconds. <button class="btn sm" id="onlineRefresh" style="margin-left:8px">Refresh</button></div>
+    <div class="panel"><div class="panel-head"><h3>Online now</h3><div class="meta" id="onlineMeta">loading…</div></div>
+    <div class="panel-body" id="onlineBody" style="overflow-x:auto"><div class="muted" style="padding:20px;text-align:center">Loading…</div></div></div>`;
+}
+async function loadOnline(){
+  const body=document.getElementById("onlineBody"), meta=document.getElementById("onlineMeta");
+  if(!body) return;
+  try{
+    const snap=await presenceDoc().get();
+    const data=snap.exists?(snap.data()||{}):{};
+    const now=Date.now(), win=120000;
+    let rows=Object.entries(data).map(([id,p])=>({id,...p}))
+      .filter(p=>p&&p.ts&&(now-p.ts)<win)
+      .filter(p=>DB.users.some(u=>u.id===p.id && u.active))
+      .sort((a,b)=>b.ts-a.ts);
+    if(meta) meta.textContent=rows.length+" online";
+    body.innerHTML = rows.length
+      ? `<table><thead><tr><th>User</th><th>Role</th><th class="num">Last active</th></tr></thead><tbody>${rows.map(p=>{
+          const secs=Math.round((now-p.ts)/1000), ago=secs<60?secs+"s ago":Math.round(secs/60)+"m ago";
+          return `<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e9e6b;margin-right:7px;vertical-align:middle"></span>${esc(p.n||p.u||"—")}${p.sa?' · ★':''}<div class="muted" style="font-size:12px;margin-left:15px">@${esc(p.u||"")}</div></td><td>${esc(roleLabel(p.r))}${p.sa?" · super admin":""}</td><td class="num muted">${ago}</td></tr>`;
+        }).join("")}</tbody></table>`
+      : `<div class="muted" style="padding:20px;text-align:center">No users online right now.</div>`;
+  }catch(e){ body.innerHTML=`<div class="notice">Couldn't read presence: ${esc(e.message||String(e))}</div>`; }
+}
+function wireSuperOnline(){
+  loadOnline();
+  const btn=document.getElementById("onlineRefresh"); if(btn) btn.onclick=loadOnline;
+  if(SUPER_ONLINE_TIMER) clearInterval(SUPER_ONLINE_TIMER);
+  SUPER_ONLINE_TIMER=setInterval(()=>{
+    if(ROUTE==="superadmin" && SUPER_TAB.tab==="online") loadOnline();
+    else { clearInterval(SUPER_ONLINE_TIMER); SUPER_ONLINE_TIMER=null; }
+  }, 20000);
+}
 
 /* Delegated views for ordinary admins the super admin has granted access.
    They reuse the super-panel builders, which already hide every super-admin
@@ -5337,6 +5505,7 @@ async function submitForgot(){
 async function finalizeLogin(u){ CURRENT=u; logAct("Signed in","Auth",""); await storeSet(DB); await sessionSet({userId:u.id}); enterApp(); }
 
 async function doLogout(){
+  stopPresence();
   logAct("Signed out","Auth",""); await storeSet(DB);
   await sessionSet(null); CURRENT=null; PENDING_LOGIN=null;
   $("#topActions").innerHTML=""; $("#view").innerHTML=""; $("#nav").innerHTML=""; $("#sideFoot").innerHTML="";
@@ -5355,7 +5524,7 @@ function renderUserChrome(){
 function enterApp(){
   $("#authScreen").classList.remove("show");
   renderUserChrome(); buildNav(); go(ROUTE); renderRateStrip();
-  subscribeFirebase();
+  subscribeFirebase(); startPresence();
   if(!PERSIST_OK){
     const t=$("#view");
     if(t && !$("#persistNote")){
