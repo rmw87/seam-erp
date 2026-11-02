@@ -540,6 +540,13 @@ function logAct(action, module, detail){
     if(DB.activity.length>1500) DB.activity=DB.activity.slice(-1500);  // keep the log bounded (shared-doc size)
   }catch(e){}
 }
+/* display name for the user who entered a record; super-admin entries stay hidden from non-super viewers */
+function byLabel(username){
+  if(!username) return "—";
+  if(!isSuperAdmin()){ try{ if(superUserSet().has(username)) return "—"; }catch(e){} }
+  const u=(DB.users||[]).find(x=>x.username===username);
+  return u?(u.name||u.username):username;
+}
 const FILTERS = { po:"All", mat:"All", ship:"All" };
 
 /* ============================================================
@@ -2222,9 +2229,10 @@ VIEWS.daily=function(){
       <td class="num strong">${num(e.qty)}</td>
       <td class="num">${cmMoney(e.cmPrice,e.currency)}</td>
       <td class="num strong">${cmMoney(dailyIncome(e),e.currency)}</td>
+      <td class="muted">${esc(byLabel(e.enteredBy))}</td>
       <td class="num"><button class="btn sm" onclick="editDaily('${e.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delDaily('${e.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="9" class="muted" style="text-align:center;padding:28px">No production entered for this month${DAILY_FILTER.line!=="All"?" on this line":""}.</td></tr>`;
+  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:28px">No production entered for this month${DAILY_FILTER.line!=="All"?" on this line":""}.</td></tr>`;
 
   // per-PO summary for the month
   const byPo={};
@@ -2268,7 +2276,7 @@ VIEWS.daily=function(){
     </div>
     <div class="panel"><div class="panel-head"><h3>Production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"}${dq?" · matching “"+esc(DAILY_FILTER.q)+"”":""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-        <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th></th></tr></thead>
+        <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th>Entered by</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h3>Month summary by order</h3><div class="meta">${DAILY_FILTER.month}</div></div>
@@ -2453,9 +2461,10 @@ VIEWS.subcontract=function(){
       <td class="num">${cmMoney(e.subCharges,e.currency)}</td>
       <td class="num strong">${cmMoney(subNetCM(e),e.currency)}</td>
       <td class="num strong">${cmMoney(subIncome(e),e.currency)}</td>
+      <td class="muted">${esc(byLabel(e.enteredBy))}</td>
       <td class="num"><button class="btn sm" onclick="editSub('${e.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delSub('${e.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="11" class="muted" style="text-align:center;padding:28px">No sub-contract production for this month${SUB_FILTER.sub!=="All"?" at this sub-factory":""}.</td></tr>`;
+  }).join("") : `<tr><td colspan="12" class="muted" style="text-align:center;padding:28px">No sub-contract production for this month${SUB_FILTER.sub!=="All"?" at this sub-factory":""}.</td></tr>`;
 
   // month summary by sub-factory
   const bySub={};
@@ -2511,7 +2520,7 @@ VIEWS.subcontract=function(){
     </div>
     <div class="panel"><div class="panel-head"><h3>Sub-contract production log</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"} · ${sq?"matching “"+esc(SUB_FILTER.q)+"”":periodLabel}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-        <thead><tr><th class="num">Date</th><th>Sub-factory</th><th>PO</th><th>Style</th><th class="num">Daily out</th><th class="num">CM price</th><th class="num">Cost adj</th><th class="num">Sub charges</th><th class="num">Net CM</th><th class="num">Income</th><th></th></tr></thead>
+        <thead><tr><th class="num">Date</th><th>Sub-factory</th><th>PO</th><th>Style</th><th class="num">Daily out</th><th class="num">CM price</th><th class="num">Cost adj</th><th class="num">Sub charges</th><th class="num">Net CM</th><th class="num">Income</th><th>Entered by</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
     <div class="grid2">
       <div class="panel"><div class="panel-head"><h3>Summary by sub-factory</h3><div class="meta">${periodLabel}</div></div>
@@ -2745,11 +2754,12 @@ VIEWS.finished=function(){
       <td class="num strong" style="color:${bal<=0?'var(--ink-faint)':'inherit'}">${num(bal)}</td>
       <td class="num">${money(f.unitCost,"USD")}</td>
       <td class="num">${money(fgValue(f),"USD")}</td>
+      <td class="muted">${esc(byLabel(f.by))}</td>
       <td class="num">
         <button class="btn sm ${bal>0?'primary':''}" ${bal>0?'':'disabled'} onclick="sellFG('${f.id}')">Sell</button>
         <button class="btn sm" onclick="editFG('${f.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delFG('${f.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="11" class="muted" style="text-align:center;padding:26px">${q?"No finished goods match your search.":"No finished-goods stock yet. Add excess pieces cut over the PO qty."}</td></tr>`;
+  }).join("") : `<tr><td colspan="12" class="muted" style="text-align:center;padding:26px">${q?"No finished goods match your search.":"No finished-goods stock yet. Add excess pieces cut over the PO qty."}</td></tr>`;
 
   const saleRows=sales.length?sales.slice().sort((a,b)=>(b.date||"").localeCompare(a.date||"")).map(s=>{
     const f=fg.find(x=>x.id===s.fgId);
@@ -2760,8 +2770,9 @@ VIEWS.finished=function(){
       <td class="num">${num(s.qty)}</td>
       <td class="num">${money(s.unitPrice,"USD")}</td>
       <td class="num strong">${money(fgSaleTotal(s),"USD")}</td>
+      <td class="muted">${esc(byLabel(s.by))}</td>
       <td class="num">${canDelete()?`<button class="btn sm danger" onclick="delFGSale('${s.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="7" class="muted" style="text-align:center;padding:22px">No sales recorded yet.</td></tr>`;
+  }).join("") : `<tr><td colspan="8" class="muted" style="text-align:center;padding:22px">No sales recorded yet.</td></tr>`;
 
   $("#view").innerHTML=`
     <div class="kpis">
@@ -2776,11 +2787,11 @@ VIEWS.finished=function(){
     </div>
     <div class="panel"><div class="panel-head"><h3>Finished-goods stock</h3><div class="meta">${stock.length} item${stock.length===1?"":"s"}${q?" · matching “"+esc(FG_FILTER.q)+"”":""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-        <thead><tr><th class="num">Date</th><th>PO</th><th>Style</th><th>Colour</th><th>Size</th><th class="num">Received</th><th class="num">Sold</th><th class="num">Balance</th><th class="num">Unit cost</th><th class="num">Value</th><th></th></tr></thead>
+        <thead><tr><th class="num">Date</th><th>PO</th><th>Style</th><th>Colour</th><th>Size</th><th class="num">Received</th><th class="num">Sold</th><th class="num">Balance</th><th class="num">Unit cost</th><th class="num">Value</th><th>Entered by</th><th></th></tr></thead>
         <tbody>${stockRows}</tbody></table></div></div>
     <div class="panel"><div class="panel-head"><h3>Sales log</h3><div class="meta">${sales.length} sale${sales.length===1?"":"s"} · ${money(totRev)} revenue</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-        <thead><tr><th class="num">Date</th><th>Item</th><th>Customer</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Total</th><th></th></tr></thead>
+        <thead><tr><th class="num">Date</th><th>Item</th><th>Customer</th><th class="num">Qty</th><th class="num">Unit price</th><th class="num">Total</th><th>Entered by</th><th></th></tr></thead>
         <tbody>${saleRows}</tbody></table></div></div>`;
   const se=$("#fgSearch"); if(se) se.oninput=e=>{ FG_FILTER.q=e.target.value; const v=e.target.value; VIEWS.finished(); const n=$("#fgSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const sc=$("#fgSearchClear"); if(sc) sc.onclick=()=>{ FG_FILTER.q=""; VIEWS.finished(); };
@@ -3417,14 +3428,15 @@ VIEWS.inventory=function(){
         <td class="num strong">${num(it.received)} <span class="muted" style="font-weight:400">${esc(it.unit||"")}</span></td>
         <td class="num">${money(it.unitPrice,"USD")}${invPriceNote(it)?`<div class="muted" style="font-size:11px">${esc(invPriceNote(it))}</div>`:""}</td>
         <td class="num strong" style="color:var(--chalk)">${money(Number(it.received||0)*Number(it.unitPrice||0))}</td>
-        <td>${esc(it.invoice||"—")}</td></tr>`).join("")
-      : `<tr><td colspan="9" class="muted" style="text-align:center;padding:30px">No goods-in entries match these filters.</td></tr>`;
+        <td>${esc(it.invoice||"—")}</td>
+        <td class="muted">${esc(byLabel(it.by))}</td></tr>`).join("")
+      : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No goods-in entries match these filters.</td></tr>`;
     bodyHTML=`${dateRange}
       <div class="panel"><div class="panel-head"><h3>Stock IN — goods received</h3><div class="meta">${rows.length} entr${rows.length===1?"y":"ies"} · <b>${money(totVal)}</b> received value${(INV_FILTER.from||INV_FILTER.to)?` · ${INV_FILTER.from?"from "+fmtDate(INV_FILTER.from):""} ${INV_FILTER.to?"to "+fmtDate(INV_FILTER.to):""}`:""}</div></div>
         <div class="panel-body" style="overflow-x:auto"><table>
-          <thead><tr><th class="num">Date</th><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Unit price</th><th class="num">Value</th><th>Invoice</th></tr></thead>
+          <thead><tr><th class="num">Date</th><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Unit price</th><th class="num">Value</th><th>Invoice</th><th>Entered by</th></tr></thead>
           <tbody>${body}
-            <tr style="border-top:2px solid var(--line);font-weight:700"><td colspan="5">Total</td><td class="num">${num(totQty)}</td><td></td><td class="num">${money(totVal)}</td><td></td></tr>
+            <tr style="border-top:2px solid var(--line);font-weight:700"><td colspan="5">Total</td><td class="num">${num(totQty)}</td><td></td><td class="num">${money(totVal)}</td><td colspan="2"></td></tr>
           </tbody></table></div></div>`;
   } else if(tab==="out"){
     const rows=invOutRows();
@@ -3464,9 +3476,10 @@ VIEWS.inventory=function(){
         <td class="num strong" style="${low?"color:var(--red)":""}">${num(bal)} <span class="muted" style="font-weight:400">${esc(it.unit||"")}</span>${low?' <span class="pill p-red" style="padding:1px 6px"><span class="dot"></span>low</span>':""}</td>
         <td class="num">${money(it.unitPrice,"USD")}${invPriceNote(it)?`<div class="muted" style="font-size:11px">${esc(invPriceNote(it))}</div>`:""}</td>
         <td class="num strong" style="color:var(--chalk)">${money(invValue(it))}</td>
+        <td class="muted">${esc(byLabel(it.by))}</td>
         <td class="num"><button class="btn sm" onclick="editInv('${it.id}')">Edit</button>
           ${canDelete()?`<button class="btn sm danger" onclick="delInv('${it.id}')">Del</button>`:""}</td></tr>`;
-    }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No items match these filters.</td></tr>`;
+    }).join("") : `<tr><td colspan="11" class="muted" style="text-align:center;padding:30px">No items match these filters.</td></tr>`;
     bodyHTML=`
       <div class="toolbar">
         <div class="search"><span class="ico">⌕</span><input id="invq" placeholder="Search code, GRN, item, supplier, colour, PO…" value="${esc(INV_FILTER.q)}"></div>
@@ -3478,7 +3491,7 @@ VIEWS.inventory=function(){
       ${lowCount?`<div class="notice"><b>${lowCount} item${lowCount===1?"":"s"}</b> at or below reorder level — shown in red below.</div>`:""}
       <div class="panel"><div class="panel-head"><h3>Stock ledger</h3><div class="meta">${rows.length} shown · <b>${num(Math.round(shownYds))} yds</b> · <b>${money(shownVal)}</b>${INV_FILTER.hideZero?" · zero-stock hidden":""}${(INV_FILTER.from||INV_FILTER.to)?` · ${INV_FILTER.from?"from "+fmtDate(INV_FILTER.from):""} ${INV_FILTER.to?"to "+fmtDate(INV_FILTER.to):""}`:""}</div></div>
         <div class="panel-body" style="overflow-x:auto"><table>
-          <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th></th></tr></thead>
+          <thead><tr><th>Code</th><th>Item</th><th>Category</th><th>Supplier</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Balance</th><th class="num">Unit price</th><th class="num">Value</th><th>Entered by</th><th></th></tr></thead>
           <tbody>${body}</tbody></table></div></div>`;
   }
 
@@ -3762,7 +3775,7 @@ function editInv(id){
       if(!codeVal){ codeVal=nextInvCode(); }
       if(DB.inventory.some(x=>x.id!==(id||null) && (x.code||"").trim().toLowerCase()===codeVal.toLowerCase())){ toast("Code “"+codeVal+"” already exists — use a unique code","warn"); return; }
       d.code=codeVal;
-      if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d}); }
+      if(id){ Object.assign(r,d); } else { DB.inventory.push({id:uid("inv"),...d,by:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
       syncSuppliersFromInventory();
       logAct(id?"Edited inventory item":"Added inventory item","Inventory", (d.code?d.code+" · ":"")+(d.item||""));
       await save(); closeModal(); VIEWS.inventory(); toast(id?"Item updated":"Item added","ok");
