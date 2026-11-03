@@ -2810,7 +2810,7 @@ VIEWS.subcontract=function(){
       <td class="num strong">${num(e.qty)}</td>
       <td class="num">${Number(e.cmPrice)>0?cmMoney(e.cmPrice,e.currency):'<span class="pill p-red" style="padding:1px 7px">no CM</span>'}</td>
       <td class="num">${Number(e.costAdj||0)>=0?"+":""}${cmMoney(e.costAdj,e.currency)}</td>
-      <td class="num">${cmMoney(e.subCharges,e.currency)}</td>
+      <td class="num">${cmMoney(e.subCharges,e.currency)}${e.subChargesLkr?`<div class="muted" style="font-size:11px">Rs ${num(e.subChargesLkr)}${e.subChargesFx?" @ "+num(e.subChargesFx):""}</div>`:""}</td>
       <td class="num strong">${cmMoney(subNetCM(e),e.currency)}</td>
       <td class="num strong">${cmMoney(subIncome(e),e.currency)}</td>
       <td class="muted">${esc(byLabel(e.enteredBy))}</td>
@@ -2897,6 +2897,14 @@ function editSub(id){
   const e = id?DB.subcontract.find(x=>x.id===id):null;
   const subOptions = DB.subfactories.map(s=>`<option value="${s.id}" ${e&&e.subId===s.id?"selected":""}>${esc(s.name)}</option>`).join("");
   const poOptions = DB.pos.map(p=>`<option value="${p.id}" ${e&&e.poId===p.id?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  // sub-contract charge is entered in Rs/pc and converted to the PO currency with an exchange rate
+  const curInit = e ? ((poByNumber(e.poId)||{}).currency||"USD") : "USD";
+  const fxInit = (e&&e.subChargesFx) ? e.subChargesFx : ((DB.fx&&DB.fx.usdlkr)||"");
+  let chgLkrInit = "";
+  if(e){
+    if(e.subChargesLkr!=null) chgLkrInit=e.subChargesLkr;
+    else if(Number(e.subCharges)>0) chgLkrInit = curInit==="LKR" ? e.subCharges : (Number(fxInit)>0 ? +(Number(e.subCharges)*Number(fxInit)).toFixed(2) : e.subCharges);
+  }
   $("#modal").className="modal wide";
   $("#modal").innerHTML=`
     <div class="modal-head"><h3>${id?"Edit sub-contract entry":"Add sub-contract production"}</h3><div class="x" id="mx">×</div></div>
@@ -2926,7 +2934,11 @@ function editSub(id){
       </div>
       <div class="row2">
         <label class="fld"><span class="lab">Cost adjustment (+ / −)</span><input id="s_adj" type="number" step="0.0001" value="${e?e.costAdj:""}" placeholder="e.g. 0.15 or -0.10"></label>
-        <label class="fld"><span class="lab">Sub-contract charges</span><input id="s_chg" type="number" step="0.0001" min="0" value="${e?e.subCharges:""}" placeholder="paid to sub-factory / pc"></label>
+        <label class="fld"><span class="lab">Sub-contract charges (Rs / pc)</span><input id="s_chg" type="number" step="0.01" min="0" value="${chgLkrInit!==""?chgLkrInit:""}" placeholder="Rs paid to sub-factory / pc"></label>
+      </div>
+      <div class="row2" id="s_chgfxrow">
+        <label class="fld" id="s_chgfxfld"><span class="lab">Exchange rate (Rs per US$)</span><input id="s_chgfx" type="number" step="0.0001" min="0" value="${fxInit!==""?fxInit:""}" placeholder="Rs per US$"></label>
+        <label class="fld"><span class="lab">Charge in PO currency</span><div id="s_chgconv" class="notice" style="margin-top:0;padding:9px 11px;font-size:12.5px">—</div></label>
       </div>
       <div class="panel-pad" style="background:var(--surface-2);border-radius:10px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
@@ -2953,9 +2965,15 @@ function editSub(id){
     recalc();
   }
   function recalc(){
-    const cm=Number($("#s_cm").value||0), adj=Number($("#s_adj").value||0), chg=Number($("#s_chg").value||0);
+    const cm=Number($("#s_cm").value||0), adj=Number($("#s_adj").value||0);
+    const chgLkr=Number($("#s_chg").value||0), rate=Number($("#s_chgfx").value||0);
     const qty=Number($("#s_qty").value||0);
     const po=poByNumber(poSel.value); const cur=po?po.currency:"USD";
+    // charge entered in Rs → converted to the PO's currency (US$ POs divide by the rate; Rs POs need no conversion)
+    const chg = cur==="LKR" ? chgLkr : (rate>0 ? chgLkr/rate : 0);
+    const fxFld=$("#s_chgfxfld"), convEl=$("#s_chgconv");
+    if(cur==="LKR"){ if(fxFld) fxFld.style.display="none"; if(convEl) convEl.textContent="Rs "+num(chgLkr)+" / pc (PO is in Rs — no conversion)"; }
+    else { if(fxFld) fxFld.style.display=""; if(convEl) convEl.innerHTML = chgLkr<=0 ? "—" : (rate>0 ? "≈ <b>"+cmMoney(chg,"USD")+"</b> / pc &nbsp;·&nbsp; Rs "+num(chgLkr)+" ÷ "+num(rate) : "Enter the exchange rate to convert Rs "+num(chgLkr)); }
     const net=cm+adj-chg;
     $("#s_net").textContent=cmMoney(net,cur);
     $("#s_income").textContent=cmMoney(net*qty,cur);
@@ -2982,19 +3000,24 @@ function editSub(id){
     };
     poSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(poSel.options).filter(o=>o.value); if(opts.length===1){ poSel.value=opts[0].value; poSel.size=1; refreshPO(); } } };
   }
-  ["s_qty","s_cm","s_adj","s_chg","s_cut"].forEach(i=>$("#"+i).oninput=recalc);
+  ["s_qty","s_cm","s_adj","s_chg","s_chgfx","s_cut"].forEach(i=>{ const el=$("#"+i); if(el) el.oninput=recalc; });
   refreshPO();
   $("#s_save").onclick=async()=>{
     const subId=$("#s_sub").value, date=$("#s_date").value, poId=poSel.value;
     const qty=Number($("#s_qty").value||0), cmPrice=Number($("#s_cm").value||0);
-    const costAdj=Number($("#s_adj").value||0), subCharges=Number($("#s_chg").value||0);
+    const costAdj=Number($("#s_adj").value||0);
+    const chgLkr=Number($("#s_chg").value||0), rate=Number($("#s_chgfx").value||0);
     const cut=Number(cutInp.value||0), style=styleInp.value.trim();
     if(!subId||!date||!poId){ toast("Sub-factory, date and PO are required","warn"); return; }
     if(qty<=0){ toast("Enter the daily out quantity","warn"); return; }
-    const po=poByNumber(poId);
+    const po=poByNumber(poId); const cur=po?po.currency:"USD";
+    if(cur!=="LKR" && chgLkr>0 && !(rate>0)){ toast("Enter the exchange rate (Rs per US$) for the sub-contract charge","warn"); return; }
+    // charge entered in Rs → stored in the PO's currency (keeps all CM math consistent)
+    const subCharges = cur==="LKR" ? chgLkr : (rate>0 ? chgLkr/rate : 0);
     if(cut>0){ DB.subCut[poId]=cut; }           // remember cut qty for this PO
     const rec={subId,date,poId,style:style||(po?po.style:""),qty,cmPrice,costAdj,subCharges,
-      currency:po?po.currency:"USD", netCM:cmPrice+costAdj-subCharges, income:(cmPrice+costAdj-subCharges)*qty};
+      subChargesLkr:chgLkr, subChargesFx: cur==="LKR"?0:rate,
+      currency:cur, netCM:cmPrice+costAdj-subCharges, income:(cmPrice+costAdj-subCharges)*qty};
     if(id){ Object.assign(e,rec); }
     else { DB.subcontract.push({id:uid("sc"),...rec,enteredBy:CURRENT?CURRENT.username:"",createdAt:Date.now()}); }
     logAct(id?"Edited sub-contract":"Added sub-contract","Sub Contract", subName(subId)+" · "+(po?po.poNumber+" · ":"")+num(qty)+" pcs");
@@ -3055,6 +3078,7 @@ function exportSubcontract(){
     Date:e.date||"", "Sub-factory":subName(e.subId), PO:po?po.poNumber:"", Style:e.style||(po?po.style:"")||"",
     "Daily out":Number(e.qty||0), "CM price":Number(e.cmPrice||0), "CM status":Number(e.cmPrice)>0?"Entered":"Pending",
     "Cost adjustment":Number(e.costAdj||0),
+    "Sub charge Rs/pc":Number(e.subChargesLkr||0), "Charge FX":Number(e.subChargesFx||0),
     "Sub-contract charges":Number(e.subCharges||0), "Net CM":subNetCM(e), Income:subIncome(e),
     "Cut qty (PO)":subCutQty(e.poId), "Total out (PO)":subTotalOut(e.poId,null), "Balance (PO)":subCutQty(e.poId)-subTotalOut(e.poId,null),
     "Entered by":byLabel(e.enteredBy)
