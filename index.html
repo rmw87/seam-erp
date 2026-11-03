@@ -2295,46 +2295,61 @@ VIEWS.production=function(){
   setHead("Operations","Production Stages");
   const notDraft=DB.pos.filter(p=>p.status!=="Draft");
   if(!notDraft.length){ return emptyState("Nothing in production","Confirm a purchase order to start tracking its production stages.","go('pos')","Open orders"); }
-  const doneCount=notDraft.filter(p=>p.status==="Completed").length;
+  const PROD_DONE=["Ready to Ship","Shipped","Completed"];   // production-finished statuses → Completed tab
+  const activePos=notDraft.filter(p=>!PROD_DONE.includes(p.status));
+  const donePos=notDraft.filter(p=>PROD_DONE.includes(p.status));
   const pq=(PROD_SEARCH||"").trim().toLowerCase();
-  let active=notDraft.slice();
-  // Completed orders are hidden by default, but a search or the toggle reveals them
-  if(!pq && !PROD_SHOW_DONE) active=active.filter(p=>p.status!=="Completed");
-  if(pq) active=active.filter(p=>((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+buyerName(p.buyerId)).toLowerCase().includes(pq));
+  const inDone = PROD_TAB==="done";
+  let pool = (inDone?donePos:activePos).slice();
+  if(pq) pool=pool.filter(p=>((p.poNumber||"")+" "+(p.style||"")+" "+(p.garment||"")+" "+buyerName(p.buyerId)).toLowerCase().includes(pq));
+  const tabPills=[["active","In production",activePos.length],["done","Completed",donePos.length]]
+    .map(([k,l,n])=>`<div class="fp ${PROD_TAB===k?"on":""}" data-pt="${k}">${l} (${n})</div>`).join("");
   const searchBar=`<div class="toolbar">
+      <div class="filterpills">${tabPills}</div>
       <input id="prodSearch" placeholder="Search PO or style…" value="${esc(PROD_SEARCH)}" style="flex:1;min-width:150px;max-width:320px">
       ${pq?`<button class="btn sm" id="prodSearchClear">Clear</button>`:""}
-      ${doneCount?`<label class="muted" style="font-size:12.5px;display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="prodShowDone" ${PROD_SHOW_DONE?"checked":""}> Show completed (${doneCount})</label>`:""}
-      <span class="muted" style="font-size:12.5px;margin-left:auto">${active.length} order${active.length===1?"":"s"}${pq?" · matching “"+esc(PROD_SEARCH)+"”":(PROD_SHOW_DONE?" · incl. completed":" in production")}</span>
+      <span class="muted" style="font-size:12.5px;margin-left:auto">${pool.length} order${pool.length===1?"":"s"}${pq?" · matching “"+esc(PROD_SEARCH)+"”":""}</span>
     </div>`;
-  const cards = active.length ? active.map(p=>{
+  const cards = pool.length ? pool.map(p=>{
     const pp=productionProgress(p); const target=Number(p.quantity||0);
-    const cells=STAGES.map(s=>{
-      const q=Number(p.production?.[s]||0);
-      return `<td class="num" style="min-width:96px">
-        <input type="number" value="${q}" min="0" max="${target}" style="width:84px;padding:6px 8px;font-size:13px"
-          onchange="setStage('${p.id}','${s}',this.value)"></td>`;
-    }).join("");
-    return `<div class="panel">
-      <div class="panel-head"><h3>${esc(p.poNumber)} · ${esc(p.garment)}</h3>
+    const head=`<div class="panel-head"><h3>${esc(p.poNumber)} · ${esc(p.garment)}</h3>
         <div class="meta">${esc(buyerName(p.buyerId))} · target ${num(target)} pcs</div>
-        <div class="actions">${pill(p.status,poPill(p.status))}<button class="btn sm" onclick="openPO('${p.id}')">Open PO</button></div></div>
+        <div class="actions">${pill(p.status,poPill(p.status))}<button class="btn sm" onclick="openPO('${p.id}')">Open PO</button></div></div>`;
+    if(inDone){
+      const cells=STAGES.map(s=>`<td class="num" style="min-width:96px">${num(Number(p.production?.[s]||0))}</td>`).join("");
+      const canReopen = p.status==="Ready to Ship";
+      return `<div class="panel">${head}
+        <div class="panel-pad">${seamHTML(p)}</div>
+        <div class="panel-body"><table>
+          <thead><tr>${STAGES.map(s=>`<th class="num">${esc(s)}</th>`).join("")}<th class="num">Progress</th></tr></thead>
+          <tbody><tr>${cells}<td class="num strong">${pp}%</td></tr></tbody></table></div>
+        <div class="panel-pad" style="border-top:1px solid var(--line-soft);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span class="muted" style="font-size:12.5px">${canReopen?"Production complete — ready to ship.":esc(p.status)+" — managed in Export &amp; Shipment."}</span>
+          ${canReopen?`<button class="btn sm" style="margin-left:auto" onclick="reopenProduction('${p.id}')">Reopen production</button>`:""}
+        </div></div>`;
+    }
+    const cells=STAGES.map(s=>{ const q=Number(p.production?.[s]||0);
+      return `<td class="num" style="min-width:96px"><input type="number" value="${q}" min="0" style="width:84px;padding:6px 8px;font-size:13px" onchange="setStage('${p.id}','${s}',this.value)"></td>`;
+    }).join("");
+    return `<div class="panel">${head}
       <div class="panel-pad">${seamHTML(p)}</div>
       <div class="panel-body"><table>
         <thead><tr>${STAGES.map(s=>`<th class="num">${esc(s)}</th>`).join("")}<th class="num">Progress</th></tr></thead>
         <tbody><tr>${cells}<td class="num strong">${pp}%</td></tr></tbody></table></div>
-      <div class="panel-pad" style="border-top:1px solid var(--line-soft);display:flex;gap:8px;align-items:center">
-        <span class="muted" style="font-size:12.5px">Mark fully complete to move toward shipping:</span>
-        <button class="btn sm" onclick="fillStages('${p.id}')">Set all stages to ${num(target)}</button>
+      <div class="panel-pad" style="border-top:1px solid var(--line-soft);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="muted" style="font-size:12.5px">Set all stages to</span>
+        <input type="number" min="0" value="${target}" id="fill_${p.id}" style="width:96px;padding:6px 8px;font-size:13px">
+        <button class="btn sm" onclick="fillStages('${p.id}')">Apply to all stages</button>
+        <button class="btn sm primary" style="margin-left:auto" onclick="completeProduction('${p.id}')">✓ Mark production complete</button>
       </div>
     </div>`;
-  }).join("") : `<div class="panel"><div class="empty"><div class="big">No orders match “${esc(PROD_SEARCH)}”</div><div style="margin-bottom:16px">Try a different PO number or style.</div></div></div>`;
+  }).join("") : `<div class="panel"><div class="empty"><div class="big">${pq?"No orders match “"+esc(PROD_SEARCH)+"”":(inDone?"No completed orders yet":"Nothing in production")}</div><div style="margin-bottom:16px">${pq?"Try a different PO number or style.":(inDone?"Mark a PO complete from the In production tab.":"Confirm a purchase order to start.")}</div></div></div>`;
   $("#view").innerHTML = searchBar + cards;
+  $$(".fp[data-pt]").forEach(f=> f.onclick=()=>{ PROD_TAB=f.dataset.pt; VIEWS.production(); });
   const pse=$("#prodSearch"); if(pse) pse.oninput=e=>{ PROD_SEARCH=e.target.value; const v=e.target.value; VIEWS.production(); const n=$("#prodSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const psc=$("#prodSearchClear"); if(psc) psc.onclick=()=>{ PROD_SEARCH=""; VIEWS.production(); };
-  const psd=$("#prodShowDone"); if(psd) psd.onchange=e=>{ PROD_SHOW_DONE=e.target.checked; VIEWS.production(); };
 };
-let PROD_SEARCH="", PROD_SHOW_DONE=false;
+let PROD_SEARCH="", PROD_TAB="active";
 async function setStage(poId,stage,val){
   const p=DB.pos.find(x=>x.id===poId); if(!p) return;
   if(!p.production) p.production={};
@@ -2343,8 +2358,28 @@ async function setStage(poId,stage,val){
 }
 async function fillStages(poId){
   const p=DB.pos.find(x=>x.id===poId); if(!p) return;
-  STAGES.forEach(s=> p.production[s]=Number(p.quantity||0));
-  autoStatus(p); await save(); VIEWS.production(); toast("All stages complete — ready to ship","ok");
+  const inp=document.getElementById("fill_"+poId);
+  let qty = inp ? Number(inp.value||0) : Number(p.quantity||0);
+  if(qty<0) qty=0;
+  if(!p.production) p.production={};
+  STAGES.forEach(s=> p.production[s]=qty);
+  autoStatus(p); await save(); VIEWS.production(); toast("All stages set to "+num(qty)+" pcs","ok");
+}
+async function completeProduction(poId){
+  const p=DB.pos.find(x=>x.id===poId); if(!p) return;
+  if(["Shipped","Completed"].includes(p.status)){ toast("Already past production","warn"); return; }
+  confirmModal("Mark production complete","Mark “"+(p.poNumber||"PO")+"” as production-complete? It moves to the Completed tab and becomes ready to ship. Actual stage quantities are kept as entered — you can reopen it later.",async()=>{
+    p.status="Ready to Ship";
+    logAct("Marked production complete","Production Stages", (p.poNumber||"")+" · "+p.garment);
+    await save(); closeModal(); PROD_TAB="done"; VIEWS.production(); toast("Production complete — moved to Completed","ok");
+  });
+}
+async function reopenProduction(poId){
+  const p=DB.pos.find(x=>x.id===poId); if(!p) return;
+  if(p.status!=="Ready to Ship"){ toast("This PO is already in shipping","warn"); return; }
+  p.status="In Production";
+  logAct("Reopened production","Production Stages", (p.poNumber||"")+" · "+p.garment);
+  await save(); PROD_TAB="active"; VIEWS.production(); toast("Production reopened","ok");
 }
 function autoStatus(p){
   const target=Number(p.quantity||0); const prod=p.production||{};
