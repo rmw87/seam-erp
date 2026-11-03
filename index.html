@@ -2443,26 +2443,31 @@ function dailyIncome(e){ return Number(e.qty||0)*Number(e.cmPrice||0); }
 VIEWS.daily=function(){
   const admin=isAdmin();
   setHead("Operations","Daily Production",
-    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> ${admin?`<button class="btn" onclick="manageLines()">Manage lines</button> `:""}<button class="btn primary" onclick="editDaily()">+ Add production</button>`);
+    `<button class="btn no-print" onclick="window.print()">🖨 Print</button> ${canExport()?`<button class="btn" onclick="exportDaily()">⬆ Export Excel</button> `:""}${admin?`<button class="btn" onclick="manageLines()">Manage lines</button> `:""}<button class="btn primary" onclick="editDaily()">+ Add production</button>`);
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Daily production is logged against an existing PO.","go('pos')","Open orders"); }
 
   // filters
   DAILY_FILTER.month = DAILY_FILTER.month || thisMonth();
+  const dAll = DAILY_FILTER.month==="All";
   const dq=(DAILY_FILTER.q||"").trim().toLowerCase();
+  const cmMissing = e => !(Number(e.cmPrice)>0);
+  const dCmPending = DB.daily.filter(cmMissing).length;
   const months = Array.from(new Set(DB.daily.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
-  if(!months.includes(DAILY_FILTER.month)) months.unshift(DAILY_FILTER.month);
+  if(!dAll && !months.includes(DAILY_FILTER.month)) months.unshift(DAILY_FILTER.month);
   let rows = DB.daily.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
   if(DAILY_FILTER.line!=="All") rows=rows.filter(e=>e.lineId===DAILY_FILTER.line);
   if(dq){   // PO/style search runs across all months
     rows=rows.filter(e=>{ const po=poByNumber(e.poId); const hay=((po?po.poNumber:"")+" "+(e.style||(po?po.style:"")||"")+" "+(po?po.garment:"")).toLowerCase(); return hay.includes(dq); });
-  } else {
+  } else if(!dAll){
     rows = rows.filter(e=> monthKey(e.date)===DAILY_FILTER.month);
   }
+  if(DAILY_FILTER.cmMissing) rows=rows.filter(cmMissing);   // only entries still needing a CM price
 
-  // KPIs
-  const allMonth = DB.daily.filter(e=>monthKey(e.date)===DAILY_FILTER.month);
+  // KPIs — scoped to the selected month, or all data when "All"
+  const allMonth = dAll ? DB.daily.slice() : DB.daily.filter(e=>monthKey(e.date)===DAILY_FILTER.month);
   const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
   const monthCM = allMonth.reduce((a,e)=>a+dailyIncome(e),0);
+  const periodLbl = dAll ? "all months" : DAILY_FILTER.month;
   const lastDate = DB.daily.reduce((mx,e)=> (e.date>mx?e.date:mx), "");
   const lastQty = DB.daily.filter(e=>e.date===lastDate).reduce((a,e)=>a+Number(e.qty||0),0);
 
@@ -2475,12 +2480,12 @@ VIEWS.daily=function(){
       <td>${esc(e.style||(po?po.style:"")||"—")}</td>
       <td class="num">${num(e.orderQty||(po?po.quantity:0))}</td>
       <td class="num strong">${num(e.qty)}</td>
-      <td class="num">${cmMoney(e.cmPrice,e.currency)}</td>
+      <td class="num">${Number(e.cmPrice)>0?cmMoney(e.cmPrice,e.currency):'<span class="pill p-red" style="padding:1px 7px">no CM</span>'}</td>
       <td class="num strong">${cmMoney(dailyIncome(e),e.currency)}</td>
       <td class="muted">${esc(byLabel(e.enteredBy))}</td>
       <td class="num"><button class="btn sm" onclick="editDaily('${e.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delDaily('${e.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:28px">No production entered for this month${DAILY_FILTER.line!=="All"?" on this line":""}.</td></tr>`;
+  }).join("") : `<tr><td colspan="10" class="muted" style="text-align:center;padding:28px">No production ${DAILY_FILTER.cmMissing?"with a pending CM price":"entered for this "+(dAll?"view":"month")}${DAILY_FILTER.line!=="All"?" on this line":""}.</td></tr>`;
 
   // per-PO summary for the month
   const byPo={};
@@ -2508,17 +2513,18 @@ VIEWS.daily=function(){
   $("#view").innerHTML=`
     <div class="print-only" style="margin-bottom:12px">
       <div style="font-size:18px;font-weight:700">Daily Production Report</div>
-      <div style="font-size:12.5px;color:#444">Period: ${dq?"search “"+esc(DAILY_FILTER.q)+"”":DAILY_FILTER.month}${DAILY_FILTER.line!=="All"?" · Line: "+esc(lineName(DAILY_FILTER.line)):" · All lines"} · Printed ${fmtDate(today())}</div>
+      <div style="font-size:12.5px;color:#444">Period: ${dq?"search “"+esc(DAILY_FILTER.q)+"”":periodLbl}${DAILY_FILTER.line!=="All"?" · Line: "+esc(lineName(DAILY_FILTER.line)):" · All lines"}${DAILY_FILTER.cmMissing?" · CM pending only":""} · Printed ${fmtDate(today())}</div>
     </div>
     <div class="kpis">
       <div class="kpi"><div class="klab">Last production day</div><div class="kval">${num(lastQty)}</div><div class="ksub">${lastDate?fmtDate(lastDate):"—"}</div></div>
-      <div class="kpi k-chalk"><div class="klab">This month output</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${DAILY_FILTER.month}</div></div>
-      <div class="kpi k-green"><div class="klab">This month CM income</div><div class="kval" style="font-size:22px">${cmMoney(monthCM)}</div><div class="ksub">qty × CM price</div></div>
-      <div class="kpi k-thread"><div class="klab">Entries</div><div class="kval">${allMonth.length}</div><div class="ksub">this month</div></div>
+      <div class="kpi k-chalk"><div class="klab">${dAll?"Total output":"This month output"}</div><div class="kval">${num(monthQty)}</div><div class="ksub">pieces · ${periodLbl}</div></div>
+      <div class="kpi k-green"><div class="klab">${dAll?"Total CM income":"This month CM income"}</div><div class="kval" style="font-size:22px">${cmMoney(monthCM)}</div><div class="ksub">qty × CM price</div></div>
+      <div class="kpi k-thread"><div class="klab">Entries</div><div class="kval">${allMonth.length}</div><div class="ksub">${periodLbl}</div></div>
     </div>
     <div class="toolbar">
-      <select id="dmonth" style="max-width:150px" ${dq?"disabled title='Clear search to use month'":""}>${months.map(m=>`<option ${m===DAILY_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <select id="dmonth" style="max-width:160px" ${dq?"disabled title='Clear search to use month'":""}><option value="All" ${dAll?"selected":""}>All months</option>${months.map(m=>`<option value="${m}" ${!dAll&&m===DAILY_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
       <div class="filterpills">${lineTabs}</div>
+      <div class="fp ${DAILY_FILTER.cmMissing?"on":""}" id="dCmPending" title="Show only entries that still need a CM price">${DAILY_FILTER.cmMissing?"✓ ":""}CM pending${dCmPending?` (${dCmPending})`:""}</div>
       <input id="dSearch" placeholder="Search PO or style…" value="${esc(DAILY_FILTER.q)}" style="flex:1;min-width:140px;max-width:280px">
       ${dq?`<button class="btn sm" id="dSearchClear">Clear</button>`:""}
     </div>
@@ -2527,19 +2533,41 @@ VIEWS.daily=function(){
         <thead><tr><th class="num">Date</th><th>Line</th><th>PO</th><th>Style</th><th class="num">Order</th><th class="num">Made</th><th class="num">CM price</th><th class="num">CM income</th><th>Entered by</th><th></th></tr></thead>
         <tbody>${body}</tbody></table></div></div>
     <div class="grid2">
-      <div class="panel"><div class="panel-head"><h3>Month summary by order</h3><div class="meta">${DAILY_FILTER.month}</div></div>
+      <div class="panel"><div class="panel-head"><h3>${dAll?"Summary by order":"Month summary by order"}</h3><div class="meta">${periodLbl}</div></div>
         <div class="panel-pad">${poSummary}
           <div class="stat-line" style="border-top:2px solid var(--line);margin-top:6px;padding-top:10px"><span class="strong">Total</span><span class="strong">${num(monthQty)} pcs · ${cmMoney(monthCM)}</span></div>
         </div></div>
-      <div class="panel"><div class="panel-head"><h3>Production progress by PO</h3><div class="meta">made vs balance · ${dLineFilt?esc(lineName(DAILY_FILTER.line)):"all lines"} · ${dq?"“"+esc(DAILY_FILTER.q)+"”":DAILY_FILTER.month}</div></div>
+      <div class="panel"><div class="panel-head"><h3>Production progress by PO</h3><div class="meta">made vs balance · ${dLineFilt?esc(lineName(DAILY_FILTER.line)):"all lines"} · ${dq?"“"+esc(DAILY_FILTER.q)+"”":periodLbl}</div></div>
         <div class="panel-pad">${dPoProgress}</div></div>
     </div>`;
   $("#dmonth").onchange=e=>{ DAILY_FILTER.month=e.target.value; VIEWS.daily(); };
-  $$(".fp").forEach(f=> f.onclick=()=>{ DAILY_FILTER.line=f.dataset.l; VIEWS.daily(); });
+  $$(".fp[data-l]").forEach(f=> f.onclick=()=>{ DAILY_FILTER.line=f.dataset.l; VIEWS.daily(); });
+  const dcp=$("#dCmPending"); if(dcp) dcp.onclick=()=>{ DAILY_FILTER.cmMissing=!DAILY_FILTER.cmMissing; VIEWS.daily(); };
   const dse=$("#dSearch"); if(dse) dse.oninput=e=>{ DAILY_FILTER.q=e.target.value; const v=e.target.value; VIEWS.daily(); const n=$("#dSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const dsc=$("#dSearchClear"); if(dsc) dsc.onclick=()=>{ DAILY_FILTER.q=""; VIEWS.daily(); };
 };
-const DAILY_FILTER={month:"",line:"All",q:""};
+const DAILY_FILTER={month:"",line:"All",q:"",cmMissing:false};
+function exportDaily(){
+  if(typeof XLSX==="undefined"){ toast("Excel engine not loaded","warn"); return; }
+  const dAll = DAILY_FILTER.month==="All";
+  const dq=(DAILY_FILTER.q||"").trim().toLowerCase();
+  let rows=DB.daily.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
+  if(DAILY_FILTER.line!=="All") rows=rows.filter(e=>e.lineId===DAILY_FILTER.line);
+  if(dq) rows=rows.filter(e=>{ const po=poByNumber(e.poId); return ((po?po.poNumber:"")+" "+(e.style||(po?po.style:"")||"")+" "+(po?po.garment:"")).toLowerCase().includes(dq); });
+  else if(!dAll) rows=rows.filter(e=>monthKey(e.date)===DAILY_FILTER.month);
+  if(DAILY_FILTER.cmMissing) rows=rows.filter(e=>!(Number(e.cmPrice)>0));
+  if(!rows.length){ toast("Nothing to export in this view","warn"); return; }
+  const data=rows.map(e=>{ const po=poByNumber(e.poId); return {
+    Date:e.date||"", Line:lineName(e.lineId), PO:po?po.poNumber:"", Style:e.style||(po?po.style:"")||"",
+    "Order qty":Number(e.orderQty||(po?po.quantity:0)||0), Made:Number(e.qty||0),
+    "CM price":Number(e.cmPrice||0), "CM income":dailyIncome(e), Currency:e.currency||"USD",
+    "CM status":Number(e.cmPrice)>0?"Entered":"Pending", "Entered by":byLabel(e.enteredBy)
+  };});
+  const ws=XLSX.utils.json_to_sheet(data);
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"DailyProduction");
+  XLSX.writeFile(wb,"Seam_DailyProduction_"+today()+".xlsx");
+  toast("Exported "+rows.length+" entries","ok");
+}
 
 function editDaily(id){
   const e = id?DB.daily.find(x=>x.id===id):null;
@@ -2661,7 +2689,7 @@ function subNetCM(e){ return Number(e.cmPrice||0)+Number(e.costAdj||0)-Number(e.
 function subIncome(e){ return subNetCM(e)*Number(e.qty||0); }
 function subTotalOut(poId,exceptId){ return DB.subcontract.filter(d=>d.poId===poId && d.id!==exceptId).reduce((a,d)=>a+Number(d.qty||0),0); }
 function subCutQty(poId){ return Number((DB.subCut||{})[poId]||0); }
-const SUB_FILTER={month:"",sub:"All",from:"",to:"",q:""};
+const SUB_FILTER={month:"",sub:"All",from:"",to:"",q:"",cmMissing:false};
 function subInRange(e){
   if(SUB_FILTER.from && (e.date||"")<SUB_FILTER.from) return false;
   if(SUB_FILTER.to && (e.date||"")>SUB_FILTER.to) return false;
@@ -2675,14 +2703,16 @@ VIEWS.subcontract=function(){
   if(!DB.pos.length){ return emptyState("Add a purchase order first","Sub-contract production is logged against an existing PO.","go('pos')","Open orders"); }
 
   SUB_FILTER.month = SUB_FILTER.month || thisMonth();
+  const sAll = SUB_FILTER.month==="All";
   const rangeActive = !!(SUB_FILTER.from || SUB_FILTER.to);
-  const periodLabel = rangeActive ? ((SUB_FILTER.from?fmtDate(SUB_FILTER.from):"…")+" → "+(SUB_FILTER.to?fmtDate(SUB_FILTER.to):"…")) : SUB_FILTER.month;
+  const periodLabel = rangeActive ? ((SUB_FILTER.from?fmtDate(SUB_FILTER.from):"…")+" → "+(SUB_FILTER.to?fmtDate(SUB_FILTER.to):"…")) : (sAll?"all months":SUB_FILTER.month);
+  const sCmPending = DB.subcontract.filter(e=>!(Number(e.cmPrice)>0)).length;
   const months = Array.from(new Set(DB.subcontract.map(e=>monthKey(e.date)))).filter(Boolean).sort().reverse();
-  if(!months.includes(SUB_FILTER.month)) months.unshift(SUB_FILTER.month);
-  // the set shown = date range when a range is set, otherwise the selected month
+  if(!sAll && !months.includes(SUB_FILTER.month)) months.unshift(SUB_FILTER.month);
+  // the set shown = date range when a range is set, otherwise the selected month (or all)
   let base = DB.subcontract.slice();
   if(SUB_FILTER.sub!=="All") base=base.filter(e=>e.subId===SUB_FILTER.sub);
-  const allMonth = rangeActive ? base.filter(subInRange) : base.filter(e=>monthKey(e.date)===SUB_FILTER.month);
+  const allMonth = rangeActive ? base.filter(subInRange) : (sAll ? base.slice() : base.filter(e=>monthKey(e.date)===SUB_FILTER.month));
   const sq=(SUB_FILTER.q||"").trim().toLowerCase();
   let rows;
   if(sq){   // PO/style search runs across all periods (sub-factory filter still applies)
@@ -2690,6 +2720,7 @@ VIEWS.subcontract=function(){
   } else {
     rows = allMonth.slice().sort((a,b)=> (b.date||"").localeCompare(a.date||"") );
   }
+  if(SUB_FILTER.cmMissing) rows=rows.filter(e=>!(Number(e.cmPrice)>0));   // only entries still needing a CM price
 
   const monthQty = allMonth.reduce((a,e)=>a+Number(e.qty||0),0);
   const monthInc = allMonth.reduce((a,e)=>a+subIncome(e),0);
@@ -2704,7 +2735,7 @@ VIEWS.subcontract=function(){
       <td>${po?`<span class="linklike" onclick="openPO('${e.poId}')">${esc(po.poNumber)}</span>`:"—"}</td>
       <td>${esc(e.style||(po?po.style:"")||"—")}</td>
       <td class="num strong">${num(e.qty)}</td>
-      <td class="num">${cmMoney(e.cmPrice,e.currency)}</td>
+      <td class="num">${Number(e.cmPrice)>0?cmMoney(e.cmPrice,e.currency):'<span class="pill p-red" style="padding:1px 7px">no CM</span>'}</td>
       <td class="num">${Number(e.costAdj||0)>=0?"+":""}${cmMoney(e.costAdj,e.currency)}</td>
       <td class="num">${cmMoney(e.subCharges,e.currency)}</td>
       <td class="num strong">${cmMoney(subNetCM(e),e.currency)}</td>
@@ -2712,7 +2743,7 @@ VIEWS.subcontract=function(){
       <td class="muted">${esc(byLabel(e.enteredBy))}</td>
       <td class="num"><button class="btn sm" onclick="editSub('${e.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delSub('${e.id}')">Delete</button>`:""}</td></tr>`;
-  }).join("") : `<tr><td colspan="12" class="muted" style="text-align:center;padding:28px">No sub-contract production for this month${SUB_FILTER.sub!=="All"?" at this sub-factory":""}.</td></tr>`;
+  }).join("") : `<tr><td colspan="12" class="muted" style="text-align:center;padding:28px">No sub-contract production ${SUB_FILTER.cmMissing?"with a pending CM price":(sAll?"recorded":"for this month")}${SUB_FILTER.sub!=="All"?" at this sub-factory":""}.</td></tr>`;
 
   // month summary by sub-factory
   const bySub={};
@@ -2754,8 +2785,9 @@ VIEWS.subcontract=function(){
       <div class="kpi k-thread"><div class="klab">Sub-factories</div><div class="kval">${DB.subfactories.length}</div><div class="ksub">${allMonth.length} entries in period</div></div>
     </div>
     <div class="toolbar">
-      <select id="smonth" style="max-width:150px" ${rangeActive?"disabled title='Clear dates to use month'":""}>${months.map(m=>`<option ${m===SUB_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
+      <select id="smonth" style="max-width:160px" ${rangeActive?"disabled title='Clear dates to use month'":""}><option value="All" ${sAll?"selected":""}>All months</option>${months.map(m=>`<option value="${m}" ${!sAll&&m===SUB_FILTER.month?"selected":""}>${m}</option>`).join("")}</select>
       <div class="filterpills">${subTabs}</div>
+      <div class="fp ${SUB_FILTER.cmMissing?"on":""}" id="sCmPending" title="Show only entries that still need a CM price">${SUB_FILTER.cmMissing?"✓ ":""}CM pending${sCmPending?` (${sCmPending})`:""}</div>
     </div>
     <div class="toolbar" style="margin-top:-6px">
       <span class="muted" style="font-size:12.5px">Date range:</span>
@@ -2784,7 +2816,8 @@ VIEWS.subcontract=function(){
   const sdc=$("#sDateClear"); if(sdc) sdc.onclick=()=>{ SUB_FILTER.from=""; SUB_FILTER.to=""; VIEWS.subcontract(); };
   const sse=$("#sSearch"); if(sse) sse.oninput=e=>{ SUB_FILTER.q=e.target.value; const v=e.target.value; VIEWS.subcontract(); const n=$("#sSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const ssc=$("#sSearchClear"); if(ssc) ssc.onclick=()=>{ SUB_FILTER.q=""; VIEWS.subcontract(); };
-  $$(".fp").forEach(f=> f.onclick=()=>{ SUB_FILTER.sub=f.dataset.s; VIEWS.subcontract(); });
+  const scp=$("#sCmPending"); if(scp) scp.onclick=()=>{ SUB_FILTER.cmMissing=!SUB_FILTER.cmMissing; VIEWS.subcontract(); };
+  $$(".fp[data-s]").forEach(f=> f.onclick=()=>{ SUB_FILTER.sub=f.dataset.s; VIEWS.subcontract(); });
 };
 
 function editSub(id){
@@ -2942,13 +2975,16 @@ function exportSubcontract(){
   let rows=DB.subcontract.slice().sort((a,b)=>(a.date||"").localeCompare(b.date||""));
   if(SUB_FILTER.sub!=="All") rows=rows.filter(e=>e.subId===SUB_FILTER.sub);
   if(SUB_FILTER.from||SUB_FILTER.to) rows=rows.filter(subInRange);
-  else rows=rows.filter(e=>monthKey(e.date)===SUB_FILTER.month);
+  else if(SUB_FILTER.month!=="All") rows=rows.filter(e=>monthKey(e.date)===SUB_FILTER.month);
+  if(SUB_FILTER.cmMissing) rows=rows.filter(e=>!(Number(e.cmPrice)>0));
   if(!rows.length){ toast("Nothing to export in this view","warn"); return; }
   const data=rows.map(e=>{ const po=poByNumber(e.poId); return {
     Date:e.date||"", "Sub-factory":subName(e.subId), PO:po?po.poNumber:"", Style:e.style||(po?po.style:"")||"",
-    "Daily out":Number(e.qty||0), "CM price":Number(e.cmPrice||0), "Cost adjustment":Number(e.costAdj||0),
+    "Daily out":Number(e.qty||0), "CM price":Number(e.cmPrice||0), "CM status":Number(e.cmPrice)>0?"Entered":"Pending",
+    "Cost adjustment":Number(e.costAdj||0),
     "Sub-contract charges":Number(e.subCharges||0), "Net CM":subNetCM(e), Income:subIncome(e),
-    "Cut qty (PO)":subCutQty(e.poId), "Total out (PO)":subTotalOut(e.poId,null), "Balance (PO)":subCutQty(e.poId)-subTotalOut(e.poId,null)
+    "Cut qty (PO)":subCutQty(e.poId), "Total out (PO)":subTotalOut(e.poId,null), "Balance (PO)":subCutQty(e.poId)-subTotalOut(e.poId,null),
+    "Entered by":byLabel(e.enteredBy)
   };});
   const ws=XLSX.utils.json_to_sheet(data);
   const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"SubContract");
