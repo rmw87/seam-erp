@@ -645,8 +645,12 @@ function currentStage(po){
   for(const s of STAGES){ if(Number(prod[s]||0) < target) return s; }
   return "Complete";
 }
-function shipmentsFor(poId){ return DB.shipments.filter(s=>s.poId===poId); }
-function shippedQty(poId){ return shipmentsFor(poId).reduce((a,s)=>a+Number(s.qty||0),0); }
+/* a shipment may cover several POs (s.lines=[{poId,qty}]); legacy shipments use s.poId + s.qty */
+function shipPoLines(s){ return (Array.isArray(s.lines)&&s.lines.length) ? s.lines : [{poId:s.poId, qty:Number(s.qty||0)}]; }
+function shipCoversPo(s,poId){ return shipPoLines(s).some(l=>l.poId===poId); }
+function shipQtyForPo(s,poId){ return shipPoLines(s).filter(l=>l.poId===poId).reduce((a,l)=>a+Number(l.qty||0),0); }
+function shipmentsFor(poId){ return DB.shipments.filter(s=>shipCoversPo(s,poId)); }
+function shippedQty(poId){ return DB.shipments.reduce((a,s)=>a+shipQtyForPo(s,poId),0); }
 
 /* ============================================================
    SEED DATA  (tells the full workflow story)
@@ -849,7 +853,7 @@ async function softDeletePO(id){
   const p=DB.pos.find(x=>x.id===id); if(!p) return;
   logAct("Deleted PO","Purchase Orders", p.poNumber+" · "+p.garment);
   const bom=DB.bom.filter(m=>m.poId===id);
-  const ships=DB.shipments.filter(s=>s.poId===id);
+  const ships=shipmentsFor(id);
   const daily=DB.daily.filter(d=>d.poId===id);
   const sub=DB.subcontract.filter(d=>d.poId===id);
   trashPush("po", p.poNumber+" · "+p.garment, {po:p,bom,ships,daily,sub});
@@ -1805,7 +1809,8 @@ function seamHTML(p){
 function shipmentMini(poId){
   const list=shipmentsFor(poId);
   if(!list.length) return `<div class="muted" style="font-size:13px">No shipments booked yet.</div>`;
-  return list.map(s=>`<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(s.qty)} pcs · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`).join("");
+  return list.map(s=>{ const pq=shipQtyForPo(s,poId); const multi=shipPoLines(s).length>1;
+    return `<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(pq)} pcs${multi?` <span class="muted" style="font-size:11px">(of ${num(s.qty)} in shipment · ${shipPoLines(s).length} POs)</span>`:""} · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`; }).join("");
 }
 
 /* ----- Material / BOM editor (searchable PO + multi-currency, stored in USD) ----- */
@@ -2364,10 +2369,13 @@ VIEWS.export=function(){
   const readyBanner = ready.length?`<div class="notice"><b>${ready.length} order${ready.length===1?"":"s"} ready to ship:</b> ${ready.map(p=>`<span class="linklike" onclick="editShip(null,'${p.id}')">${esc(p.poNumber)}</span>`).join(", ")} — book an export shipment.</div>`:"";
 
   const rows = list.length?list.map(s=>{
-    const po=poByNumber(s.poId);
+    const pls=shipPoLines(s);
+    const multiPo=pls.length>1;
+    const poCell = pls.map(l=>{ const po=poByNumber(l.poId); return po?`<span class="linklike" onclick="openPO('${l.poId}')">${esc(po.poNumber)}</span>${multiPo?` <span class="muted">(${num(l.qty)})</span>`:""}`:"—"; }).join("<br>");
+    const buyers = Array.from(new Set(pls.map(l=>{const po=poByNumber(l.poId);return po?buyerName(po.buyerId):"";}).filter(Boolean)));
     return `<tr>
       <td class="mono">${esc(s.invoiceNo||"—")}</td>
-      <td>${po?`<span class="linklike" onclick="openPO('${s.poId}')">${esc(po.poNumber)}</span>`:"—"}<div class="muted" style="font-size:12px">${esc(buyerName(s.buyerId))}</div></td>
+      <td>${poCell||"—"}<div class="muted" style="font-size:12px">${esc(buyers.join(", ")||buyerName(s.buyerId))}</div></td>
       <td class="num">${num(s.qty)}</td>
       <td>${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad||"")} → ${esc(s.portDischarge||"")}</div></td>
       <td class="num">${fmtDate(s.shipDate)}</td>
@@ -2395,34 +2403,99 @@ VIEWS.export=function(){
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.ship=f.dataset.f; VIEWS.export(); });
 };
 function editShip(id,presetPo){
-  const r = id?DB.shipments.find(s=>s.id===id):{mode:"Sea",status:"Booked",shipDate:today(),poId:presetPo||(DB.pos[0]&&DB.pos[0].id)};
-  if(r.poId && !r.buyerId){ const po=poByNumber(r.poId); if(po) r.buyerId=po.buyerId; }
-  openModal({title:id?"Edit shipment":"Book export shipment", wide:true, record:r, submitLabel:id?"Save shipment":"Book shipment",
-    fields:[
-      {name:"poId",label:"Purchase order",type:"select",options:poOpts(),required:true,half:true},
-      {name:"qty",label:"Quantity (pcs)",type:"number",required:true,half:true},
-      {name:"mode",label:"Mode",type:"select",options:SHIP_MODE,half:true},
-      {name:"status",label:"Status",type:"select",options:SHIP_STATUS,half:true},
-      {name:"shipDate",label:"Ship date",type:"date",half:true},
-      {name:"eta",label:"ETA",type:"date",half:true},
-      {name:"portLoad",label:"Port of loading",half:true,placeholder:"Colombo"},
-      {name:"portDischarge",label:"Port of discharge",half:true,placeholder:"Hamburg"},
-      {name:"invoiceNo",label:"Invoice no.",half:true},
-      {name:"blAwb",label:"B/L or AWB no.",half:true},
-    ],
-    onSubmit:async d=>{
-      const po=poByNumber(d.poId); d.buyerId=po?po.buyerId:"";
-      if(id){ Object.assign(r,d); } else { DB.shipments.push({id:uid("shp"),...d}); }
-      logAct(id?"Edited shipment":"Booked shipment","Export", (d.invoiceNo||"")+" · "+num(d.qty||0)+" pcs");
-      await save(); closeModal(); go("export");
-      toast(id?"Shipment updated":"Shipment booked","ok");
-    }});
+  const s = id?DB.shipments.find(x=>x.id===id):null;
+  const rec = s || {mode:"Sea",status:"Booked",shipDate:today()};
+  // existing lines → the allocation list; legacy single-PO shipment becomes one line
+  let ALLOC = s ? shipPoLines(s).map(l=>{ const po=poByNumber(l.poId); return {poId:l.poId, label:po?po.poNumber+" · "+po.garment:l.poId, qty:Number(l.qty||0)}; })
+                : (presetPo ? (()=>{ const po=poByNumber(presetPo); return po?[{poId:presetPo,label:po.poNumber+" · "+po.garment,qty:""}]:[]; })() : []);
+  const poOptions = DB.pos.map(p=>`<option value="${p.id}">${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+  const field=(lab,inner)=>`<label class="fld"><span class="lab">${lab}</span>${inner}</label>`;
+  $("#modal").className="modal wide";
+  $("#modal").innerHTML=`
+    <div class="modal-head"><h3>${id?"Edit shipment":"Book export shipment"}</h3><div class="x" id="mx">×</div></div>
+    <div class="modal-body">
+      <div class="notice" style="margin-top:0">One shipment can carry <b>several POs</b>. Add each PO going in this shipment with its quantity.</div>
+      <label class="fld"><span class="lab">Purchase orders in this shipment *</span>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div style="flex:2;min-width:180px">
+            <input id="sh_search" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
+            <select id="sh_po"><option value="">— select PO —</option>${poOptions}</select>
+          </div>
+          <input id="sh_qty" type="number" min="0" placeholder="qty (pcs)" style="flex:1;min-width:90px">
+          <button type="button" class="btn sm primary" id="sh_add">+ Add PO</button>
+        </div>
+      </label>
+      <div id="sh_list" style="margin-top:2px"></div>
+      <div class="stat-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span class="muted" style="font-size:12.5px">Total quantity</span><span class="strong" id="sh_total">0 pcs</span></div>
+      <div class="row2">
+        ${field("Mode",`<select id="sh_mode">${SHIP_MODE.map(m=>`<option ${rec.mode===m?"selected":""}>${m}</option>`).join("")}</select>`)}
+        ${field("Status",`<select id="sh_status">${SHIP_STATUS.map(x=>`<option ${rec.status===x?"selected":""}>${x}</option>`).join("")}</select>`)}
+      </div>
+      <div class="row2">
+        ${field("Ship date",`<input id="sh_date" type="date" value="${esc(rec.shipDate||today())}">`)}
+        ${field("ETA",`<input id="sh_eta" type="date" value="${esc(rec.eta||"")}">`)}
+      </div>
+      <div class="row2">
+        ${field("Port of loading",`<input id="sh_pl" value="${esc(rec.portLoad||"")}" placeholder="Colombo">`)}
+        ${field("Port of discharge",`<input id="sh_pd" value="${esc(rec.portDischarge||"")}" placeholder="Hamburg">`)}
+      </div>
+      <div class="row2">
+        ${field("Invoice no.",`<input id="sh_inv" value="${esc(rec.invoiceNo||"")}">`)}
+        ${field("B/L or AWB no.",`<input id="sh_bl" value="${esc(rec.blAwb||"")}">`)}
+      </div>
+    </div>
+    <div class="modal-foot"><button class="btn ghost" id="mcancel">Cancel</button>
+      <button class="btn primary" id="sh_save">${id?"Save shipment":"Book shipment"}</button></div>`;
+  $("#scrim").classList.add("open");
+  $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
+  const aSearch=$("#sh_search"), aSel=$("#sh_po"), aQty=$("#sh_qty");
+  function allocTotal(){ return ALLOC.reduce((a,x)=>a+Number(x.qty||0),0); }
+  function renderAlloc(){
+    const list=$("#sh_list");
+    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>`<div class="stat-line" style="padding:5px 0"><span>${esc(x.label)} — <b>${num(x.qty)}</b> pcs</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`).join("")
+      : `<div class="muted" style="font-size:12px;padding:4px 0">No POs added yet — pick a PO + qty and “Add PO”.</div>`;
+    $("#sh_total").textContent=num(allocTotal())+" pcs";
+    list.querySelectorAll("[data-ai]").forEach(b=> b.onclick=()=>{ ALLOC.splice(Number(b.dataset.ai),1); renderAlloc(); });
+  }
+  aSearch.oninput=()=>{ const q=aSearch.value.trim().toLowerCase(); const cur=aSel.value;
+    const matches=DB.pos.filter(p=>!q || ((p.poNumber||"")+" "+(p.garment||"")+" "+(p.style||"")+" "+buyerName(p.buyerId)).toLowerCase().includes(q));
+    aSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
+    aSel.size=q&&matches.length?Math.min(8,matches.length+1):1;
+  };
+  aSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(aSel.options).filter(o=>o.value); if(opts.length===1){ aSel.value=opts[0].value; aSel.size=1; } } };
+  aSel.addEventListener("change",()=>{ aSel.size=1; });
+  $("#sh_add").onclick=()=>{
+    const pid=aSel.value, qv=Number(aQty.value||0);
+    if(!pid){ toast("Pick a PO to add","warn"); return; }
+    if(qv<=0){ toast("Enter the qty for this PO","warn"); return; }
+    if(ALLOC.some(x=>x.poId===pid)){ toast("That PO is already in the shipment — remove it to change the qty","warn"); return; }
+    const po=poByNumber(pid);
+    ALLOC.push({poId:pid, label:(po?po.poNumber+" · "+po.garment:pid), qty:qv});
+    aQty.value=""; aSearch.value=""; aSel.innerHTML=`<option value="">— select PO —</option>`+poOptions; aSel.size=1; renderAlloc();
+  };
+  renderAlloc();
+  $("#sh_save").onclick=async()=>{
+    if(!ALLOC.length){ toast("Add at least one PO to the shipment","warn"); return; }
+    const lines=ALLOC.map(a=>({poId:a.poId, qty:Number(a.qty||0)}));
+    const total=lines.reduce((a,l)=>a+l.qty,0);
+    const firstPo=poByNumber(lines[0].poId);
+    const d={ poId:lines[0].poId, buyerId:firstPo?firstPo.buyerId:"", qty:total, lines,
+      mode:$("#sh_mode").value, status:$("#sh_status").value, shipDate:$("#sh_date").value, eta:$("#sh_eta").value,
+      portLoad:$("#sh_pl").value.trim(), portDischarge:$("#sh_pd").value.trim(), invoiceNo:$("#sh_inv").value.trim(), blAwb:$("#sh_bl").value.trim() };
+    if(id){ Object.assign(s,d); } else { DB.shipments.push({id:uid("shp"),...d}); }
+    logAct(id?"Edited shipment":"Booked shipment","Export", (d.invoiceNo||"")+" · "+num(total)+" pcs · "+lines.length+" PO"+(lines.length===1?"":"s"));
+    await save(); closeModal(); go("export");
+    toast(id?"Shipment updated":"Shipment booked","ok");
+  };
 }
 async function setShipStatus(id,val){
   const s=DB.shipments.find(x=>x.id===id); if(!s) return; s.status=val;
-  if(val==="Delivered"){ const po=poByNumber(s.poId); if(po && !["Completed"].includes(po.status)){
-    const shipped=shippedQty(po.id); if(shipped>=Number(po.quantity||0)) po.status="Completed"; else po.status="Shipped";
-  }}
+  if(val==="Delivered"){
+    const pids=Array.from(new Set(shipPoLines(s).map(l=>l.poId)));
+    pids.forEach(pid=>{ const po=poByNumber(pid); if(po && po.status!=="Completed"){
+      const shipped=shippedQty(pid); po.status = shipped>=Number(po.quantity||0) ? "Completed" : "Shipped";
+    }});
+  }
   await save(); toast("Shipment → "+val,"ok"); VIEWS.export();
 }
 function delShip(id){
