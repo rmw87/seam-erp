@@ -651,6 +651,10 @@ function shipCoversPo(s,poId){ return shipPoLines(s).some(l=>l.poId===poId); }
 function shipQtyForPo(s,poId){ return shipPoLines(s).filter(l=>l.poId===poId).reduce((a,l)=>a+Number(l.qty||0),0); }
 function shipmentsFor(poId){ return DB.shipments.filter(s=>shipCoversPo(s,poId)); }
 function shippedQty(poId){ return DB.shipments.reduce((a,s)=>a+shipQtyForPo(s,poId),0); }
+/* value of a shipment = Σ (line qty × that PO's avg unit price), grouped by currency */
+function shipValueBy(s){ const by={}; shipPoLines(s).forEach(l=>{ const po=poByNumber(l.poId); if(!po) return; const c=po.currency||"USD"; by[c]=(by[c]||0)+Number(l.qty||0)*poAvgPrice(po); }); return by; }
+function shipValueText(s){ const by=shipValueBy(s); const cs=Object.keys(by); return cs.length?cs.map(c=>money(by[c],c)).join(" + "):"—"; }
+function shipValueForPo(s,poId){ const po=poByNumber(poId); return po?shipQtyForPo(s,poId)*poAvgPrice(po):0; }
 
 /* ============================================================
    SEED DATA  (tells the full workflow story)
@@ -1809,8 +1813,9 @@ function seamHTML(p){
 function shipmentMini(poId){
   const list=shipmentsFor(poId);
   if(!list.length) return `<div class="muted" style="font-size:13px">No shipments booked yet.</div>`;
-  return list.map(s=>{ const pq=shipQtyForPo(s,poId); const multi=shipPoLines(s).length>1;
-    return `<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(pq)} pcs${multi?` <span class="muted" style="font-size:11px">(of ${num(s.qty)} in shipment · ${shipPoLines(s).length} POs)</span>`:""} · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`; }).join("");
+  const po0=poByNumber(poId);
+  return list.map(s=>{ const pq=shipQtyForPo(s,poId); const multi=shipPoLines(s).length>1; const pv=shipValueForPo(s,poId);
+    return `<div class="stat-line"><span><span class="mono">${esc(s.invoiceNo||"—")}</span> · ${num(pq)} pcs${pv?` · <b>${money(pv,po0?po0.currency:"USD")}</b>`:""}${multi?` <span class="muted" style="font-size:11px">(of ${num(s.qty)} in shipment · ${shipPoLines(s).length} POs)</span>`:""} · ${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad)} → ${esc(s.portDischarge)} · ETA ${fmtDate(s.eta)}</div></span><span>${pill(s.status,shipPill(s.status))}</span></div>`; }).join("");
 }
 
 /* ----- Material / BOM editor (searchable PO + multi-currency, stored in USD) ----- */
@@ -2400,6 +2405,9 @@ VIEWS.export=function(){
   const totalUnits=DB.shipments.reduce((a,s)=>a+Number(s.qty||0),0);
   const inTransit=DB.shipments.filter(s=>s.status==="In Transit").length;
   const ready=DB.pos.filter(p=>p.status==="Ready to Ship");
+  // total export value across all shipments, grouped by currency
+  const valBy={}; DB.shipments.forEach(s=>{ const by=shipValueBy(s); Object.keys(by).forEach(c=>valBy[c]=(valBy[c]||0)+by[c]); });
+  const valText=Object.keys(valBy).length?Object.keys(valBy).map(c=>money(valBy[c],c)).join(" + "):money(0,"USD");
 
   const readyBanner = ready.length?`<div class="notice"><b>${ready.length} order${ready.length===1?"":"s"} ready to ship:</b> ${ready.map(p=>`<span class="linklike" onclick="editShip(null,'${p.id}')">${esc(p.poNumber)}</span>`).join(", ")} — book an export shipment.</div>`:"";
 
@@ -2412,6 +2420,7 @@ VIEWS.export=function(){
       <td class="mono">${esc(s.invoiceNo||"—")}</td>
       <td>${poCell||"—"}<div class="muted" style="font-size:12px">${esc(buyers.join(", ")||buyerName(s.buyerId))}</div></td>
       <td class="num">${num(s.qty)}</td>
+      <td class="num strong" style="color:var(--chalk)">${shipValueText(s)}</td>
       <td>${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad||"")} → ${esc(s.portDischarge||"")}</div></td>
       <td class="num">${fmtDate(s.shipDate)}</td>
       <td class="num">${fmtDate(s.eta)}</td>
@@ -2421,19 +2430,20 @@ VIEWS.export=function(){
         </select></td>
       <td class="num"><button class="btn sm" onclick="editShip('${s.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delShip('${s.id}')">Delete</button>`:""}</td></tr>`;
-  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No shipments in this status.</td></tr>`;
+  }).join(""):`<tr><td colspan="9" class="muted" style="text-align:center;padding:30px">No shipments in this status.</td></tr>`;
 
   $("#view").innerHTML=`
     <div class="kpis">
       <div class="kpi"><div class="klab">Shipments</div><div class="kval">${DB.shipments.length}</div><div class="ksub">booked to date</div></div>
       <div class="kpi k-thread"><div class="klab">In transit</div><div class="kval">${inTransit}</div><div class="ksub">on the water / in the air</div></div>
       <div class="kpi k-chalk"><div class="klab">Units exported</div><div class="kval">${num(totalUnits)}</div><div class="ksub">total pieces shipped</div></div>
-      <div class="kpi k-green"><div class="klab">Ready to ship</div><div class="kval">${ready.length}</div><div class="ksub">orders awaiting export</div></div>
+      <div class="kpi k-green"><div class="klab">Export value</div><div class="kval" style="font-size:20px">${valText}</div><div class="ksub">all shipments · at PO prices</div></div>
+      <div class="kpi"><div class="klab">Ready to ship</div><div class="kval">${ready.length}</div><div class="ksub">orders awaiting export</div></div>
     </div>
     ${readyBanner}
     <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.ship===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
     <div class="panel"><div class="panel-body"><table>
-      <thead><tr><th>Invoice</th><th>PO / Buyer</th><th class="num">Qty</th><th>Mode / Route</th><th class="num">Shipped</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Invoice</th><th>PO / Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Mode / Route</th><th class="num">Shipped</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.ship=f.dataset.f; VIEWS.export(); });
 };
