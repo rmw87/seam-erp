@@ -399,7 +399,41 @@ function subscribeFirebase(){
     if(CURRENT && !$("#scrim").classList.contains("open") && VIEWS[ROUTE]){
       if(!userCanSee(ROUTE)) go(ROUTE); else VIEWS[ROUTE]();  // live refresh / re-gate
     }
+    maybeAppReload();   // super admin may have pushed a new app version
   }, err=>{ console.error("Firestore listen failed:", err); });
+}
+/* ---- super-admin "refresh everyone": reload the page on all devices to pick up a new deploy ---- */
+let APP_RELOAD_SEEN=0, APP_UPDATE_PENDING=false;
+function maybeAppReload(){
+  const rt=Number((DB&&DB.appReload&&DB.appReload.ts)||0);
+  if(rt<=APP_RELOAD_SEEN) return;
+  if($("#scrim") && $("#scrim").classList.contains("open")){ APP_UPDATE_PENDING=true; showUpdateBar(); return; }  // don't interrupt someone mid-entry
+  doAppReload(rt);
+}
+function doAppReload(rt){
+  APP_RELOAD_SEEN=rt; APP_UPDATE_PENDING=false;
+  try{ localStorage.setItem("seam_reload_seen", String(rt)); }catch(e){}
+  const b=document.getElementById("updBar"); if(b) b.remove();
+  toast("App updated — refreshing…","ok");
+  setTimeout(()=>{ try{ location.replace(location.pathname+"?r="+rt); }catch(e){ location.reload(); } }, 900);
+}
+function showUpdateBar(){
+  if(document.getElementById("updBar")) return;
+  const b=document.createElement("div"); b.id="updBar"; b.className="no-print";
+  b.style.cssText="position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:9500;background:#b45309;color:#fff;padding:9px 16px;border-radius:22px;font-size:13.5px;box-shadow:0 4px 16px rgba(0,0,0,.3);cursor:pointer";
+  b.textContent="🔄 New app version ready — tap to update";
+  b.onclick=()=>doAppReload(Number((DB&&DB.appReload&&DB.appReload.ts)||Date.now()));
+  document.body.appendChild(b);
+}
+async function pushAppReload(){
+  confirmModal("Refresh everyone's app","Reload the app on every signed-in device so staff get the latest version you deployed. Anyone in the middle of entering data sees an “update ready” button instead of losing their work. Continue?",async()=>{
+    DB.appReload={ts:Date.now(), by:CURRENT?CURRENT.username:""};
+    APP_RELOAD_SEEN=DB.appReload.ts;   // don't bounce our own device via the snapshot echo
+    logAct("Pushed app refresh","Super Admin","reload all devices");
+    await save(); closeModal();
+    toast("Refresh pushed — devices will reload","ok");
+    setTimeout(()=>{ try{ location.replace(location.pathname+"?r="+DB.appReload.ts); }catch(e){ location.reload(); } }, 1400);  // refresh this device too
+  });
 }
 
 /* ---- live presence: every signed-in device (any role) checks in; super admin sees who's online ---- */
@@ -805,6 +839,8 @@ async function initData(){
   if(!DB.tabLabels) DB.tabLabels={};   // super-admin custom tab names
   if(!DB.defaults) DB.defaults={};     // module defaults (currency, unit, reorder, cm price)
   if(!DB.topbar) DB.topbar={rate:true, notif:true};   // top-bar features (rate bar, notifications icon)
+  if(!DB.appReload) DB.appReload={ts:0};   // super-admin "refresh everyone" signal
+  APP_RELOAD_SEEN = Number((DB.appReload&&DB.appReload.ts)||0);   // baseline so we don't reload on first load
   syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
   if(DB.users.length && !DB.users.some(u=>u.superadmin)){
@@ -1061,7 +1097,7 @@ function toast(msg,type=""){
 /* ============================================================
    MODAL + FORM ENGINE
    ============================================================ */
-function closeModal(){ $("#scrim").classList.remove("open"); $("#modal").innerHTML=""; }
+function closeModal(){ $("#scrim").classList.remove("open"); $("#modal").innerHTML=""; if(APP_UPDATE_PENDING) maybeAppReload(); }
 $("#scrim").addEventListener("click",e=>{ if(e.target===$("#scrim")) closeModal(); });
 document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeModal(); });
 
@@ -5586,6 +5622,11 @@ function superModulesHTML(){
       <div class="panel-pad">
         <label style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--line-soft);font-size:13.5px"><input type="checkbox" id="tb_rate" ${((DB.topbar||{}).rate!==false)?"checked":""}> <span style="flex:1"><b>USD → LKR rate bar</b><div class="muted" style="font-size:12px">Show the exchange-rate strip at the top of every page.</div></span></label>
         <label style="display:flex;align-items:center;gap:10px;padding:8px 0;font-size:13.5px"><input type="checkbox" id="tb_notif" ${((DB.topbar||{}).notif!==false)?"checked":""}> <span style="flex:1"><b>Notifications icon</b> 🔔<div class="muted" style="font-size:12px">Show the bell icon — foundation for user-wise reminders &amp; alerts (coming soon).</div></span></label>
+      </div></div>
+    <div class="panel"><div class="panel-head"><h3>App updates</h3><div class="meta">push a new version to everyone</div></div>
+      <div class="panel-pad">
+        <div class="muted" style="font-size:13px;margin-bottom:10px">After you deploy a new version, open tabs keep running the old one until each device refreshes. Tap below to <b>reload the app on every signed-in device</b> at once, so all staff get the latest version. Anyone mid-entry sees an “update ready” button instead of losing work.</div>
+        <button class="btn primary" onclick="pushAppReload()">🔄 Refresh everyone's app now</button>
       </div></div>`;
 }
 function wireSuperModules(){
