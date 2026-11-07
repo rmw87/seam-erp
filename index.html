@@ -1588,8 +1588,15 @@ VIEWS.pos=function(){
       <td style="min-width:110px"><div class="bar teal"><i style="width:${mp.pct}%"></i></div></td>
       <td style="min-width:110px"><div class="bar"><i style="width:${pp}%"></i></div></td>
       <td class="num">${fmtDate(p.deliveryDate)}</td>
+      <td class="num">${p.eta?fmtDate(p.eta):"—"}</td>
     </tr>`;
-  }).join(""):`<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">${q?"No orders match your search.":"No orders in this status."}</td></tr>`;
+  }).join(""):`<tr><td colspan="9" class="muted" style="text-align:center;padding:30px">${q?"No orders match your search.":"No orders in this status."}</td></tr>`;
+  // totals across the filtered set (respect status / search / date filters)
+  const totQty=filtered.reduce((a,p)=>a+Number(p.quantity||0),0);
+  const valByCur={}; filtered.forEach(p=>{ const c=p.currency||"USD"; valByCur[c]=(valByCur[c]||0)+poValue(p); });
+  const totValText=Object.keys(valByCur).length?Object.keys(valByCur).map(c=>money(valByCur[c],c)).join(" + "):money(0,"USD");
+  const tfoot=filtered.length?`<tfoot><tr style="border-top:2px solid var(--line);font-weight:700">
+      <td>Total</td><td></td><td class="num">${num(totQty)}</td><td class="num" style="color:var(--chalk)">${totValText}</td><td colspan="5"></td></tr></tfoot>`:"";
   $("#view").innerHTML=`
     <div class="toolbar">
       <div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.po===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div>
@@ -1603,10 +1610,10 @@ VIEWS.pos=function(){
       <input id="poDTo" type="date" value="${dTo||""}" style="max-width:160px">
       ${dateActive?`<button class="btn sm" id="poDateClear">Clear dates</button>`:""}
     </div>
-    <div class="panel"><div class="panel-head"><h3>Purchase orders</h3><div class="meta">${filtered.length} order${filtered.length===1?"":"s"}${q?" · matching “"+esc(PO_SEARCH)+"”":""}${dateActive?" · delivery "+(dFrom?fmtDate(dFrom):"…")+" → "+(dTo?fmtDate(dTo):"…"):""}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Purchase orders</h3><div class="meta">${filtered.length} order${filtered.length===1?"":"s"} · ${num(totQty)} pcs · ${totValText}${q?" · matching “"+esc(PO_SEARCH)+"”":""}${dateActive?" · delivery "+(dFrom?fmtDate(dFrom):"…")+" → "+(dTo?fmtDate(dTo):"…"):""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
-      <thead><tr><th>PO / Style</th><th>Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th><th>Material</th><th>Production</th><th class="num">Delivery</th></tr></thead>
-      <tbody>${rows}</tbody></table></div></div>`;
+      <thead><tr><th>PO / Style</th><th>Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Status</th><th>Material</th><th>Production</th><th class="num">ETD</th><th class="num">ETA</th></tr></thead>
+      <tbody>${rows}</tbody>${tfoot}</table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.po=f.dataset.f; VIEWS.pos(); });
   const se=$("#poSearch"); if(se) se.oninput=e=>{ PO_SEARCH=e.target.value; const v=e.target.value; VIEWS.pos(); const n=$("#poSearch"); if(n){ n.focus(); n.value=v; n.selectionStart=n.selectionEnd=v.length; } };
   const sc=$("#poSearchClear"); if(sc) sc.onclick=()=>{ PO_SEARCH=""; VIEWS.pos(); };
@@ -1628,7 +1635,8 @@ function poFields(){
     {name:"unitPrice",label:"Unit price",type:"number",step:"0.01",half:true},
     {name:"currency",label:"Currency",type:"select",options:["USD","EUR","GBP"],half:true},
     {name:"orderDate",label:"Order date",type:"date",half:true,default:today()},
-    {name:"deliveryDate",label:"Delivery date",type:"date",half:true},
+    {name:"deliveryDate",label:"Delivery / ETD (ex-factory)",type:"date",half:true},
+    {name:"eta",label:"ETA (arrival at buyer)",type:"date",half:true},
     {name:"status",label:"Status",type:"select",options:PO_STATUS,half:true},
     {name:"colors",label:"Colours",half:true,placeholder:"Navy, White"},
     {name:"sizes",label:"Size range",half:true,placeholder:"S–XXL"},
