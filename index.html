@@ -394,6 +394,10 @@ function subscribeFirebase(){
       const me=DB.users.find(u=>u.id===CURRENT.id);
       if(me && me.active){ CURRENT=me; }
       else { doLogout(); return; }
+      // super-admin "force logout": a bulk signal skips super admins; a per-user signal hits anyone
+      const fl=DB.forceLogout||{};
+      const thr=Math.max(isSuperAdmin()?0:Number(fl.all||0), Number((fl.users||{})[CURRENT.id]||0));
+      if(thr>LOGIN_TS){ doLogout(); return; }   // silent sign-out — just returns to the login screen
     }
     buildNav(); renderRateStrip();
     if(CURRENT && !$("#scrim").classList.contains("open") && VIEWS[ROUTE]){
@@ -403,7 +407,23 @@ function subscribeFirebase(){
   }, err=>{ console.error("Firestore listen failed:", err); });
 }
 /* ---- super-admin "refresh everyone": reload the page on all devices to pick up a new deploy ---- */
-let APP_RELOAD_SEEN=0, APP_UPDATE_PENDING=false;
+let APP_RELOAD_SEEN=0, APP_UPDATE_PENDING=false, LOGIN_TS=0;
+/* super-admin remote sign-out: set a timestamp; any session that started before it is signed out live */
+async function forceLogoutAll(){
+  confirmModal("Sign out all users","Immediately sign out every signed-in user on all their devices. They can log back in right away. Super admins stay signed in. Continue?",async()=>{
+    DB.forceLogout=DB.forceLogout||{}; DB.forceLogout.all=Date.now();
+    logAct("Signed out all users","Super Admin","");
+    await save(); closeModal(); toast("All users signed out","ok");
+  });
+}
+async function forceLogoutUser(id){
+  const u=DB.users.find(x=>x.id===id); if(!u) return;
+  confirmModal("Sign out user","Sign out @"+u.username+" on all their devices now? They can log back in afterwards.",async()=>{
+    DB.forceLogout=DB.forceLogout||{}; DB.forceLogout.users=DB.forceLogout.users||{}; DB.forceLogout.users[id]=Date.now();
+    logAct("Signed out user","Super Admin","@"+u.username);
+    await save(); closeModal(); toast("@"+u.username+" signed out","ok");
+  });
+}
 function maybeAppReload(){
   const rt=Number((DB&&DB.appReload&&DB.appReload.ts)||0);
   if(rt<=APP_RELOAD_SEEN) return;
@@ -840,6 +860,7 @@ async function initData(){
   if(!DB.defaults) DB.defaults={};     // module defaults (currency, unit, reorder, cm price)
   if(!DB.topbar) DB.topbar={rate:true, notif:true};   // top-bar features (rate bar, notifications icon)
   if(!DB.appReload) DB.appReload={ts:0};   // super-admin "refresh everyone" signal
+  if(!DB.forceLogout) DB.forceLogout={all:0,users:{}};   // super-admin remote sign-out signal
   APP_RELOAD_SEEN = Number((DB.appReload&&DB.appReload.ts)||0);   // baseline so we don't reload on first load
   syncSuppliersFromInventory();      // backfill Suppliers list from inventory supplier names
   // ensure a super admin exists (the first/earliest admin is promoted)
@@ -5204,7 +5225,7 @@ function wireSuperGuides(){
 let SUPER_ONLINE_TIMER=null;
 function superOnlineHTML(){
   if(!FB_ON) return `<div class="notice">Online presence needs the shared cloud database to be on.</div>`;
-  return `<div class="notice">Everyone signed in right now — <b>all roles</b>, active in the last ~3 minutes. Each device checks in automatically. <b>Note:</b> a user only appears after their app has loaded this version — ask staff to reopen/refresh the app once. <button class="btn sm" id="onlineRefresh" style="margin-left:8px">Refresh</button></div>
+  return `<div class="notice">Everyone signed in right now — <b>all roles</b>, active in the last ~3 minutes. Each device checks in automatically. <button class="btn sm" id="onlineRefresh" style="margin-left:8px">Refresh</button> <button class="btn sm" onclick="forceLogoutAll()">⎋ Sign out all</button></div>
     <div class="panel"><div class="panel-head"><h3>Online now</h3><div class="meta" id="onlineMeta">loading…</div></div>
     <div class="panel-body" id="onlineBody" style="overflow-x:auto"><div class="muted" style="padding:20px;text-align:center">Loading…</div></div></div>`;
 }
@@ -5221,9 +5242,10 @@ async function loadOnline(){
       .sort((a,b)=>b.ts-a.ts);
     if(meta) meta.textContent=rows.length+" online";
     body.innerHTML = rows.length
-      ? `<table><thead><tr><th>User</th><th>Role</th><th class="num">Last active</th></tr></thead><tbody>${rows.map(p=>{
+      ? `<table><thead><tr><th>User</th><th>Role</th><th class="num">Last active</th><th class="num"></th></tr></thead><tbody>${rows.map(p=>{
           const secs=Math.round((now-p.ts)/1000), ago=secs<60?secs+"s ago":Math.round(secs/60)+"m ago";
-          return `<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e9e6b;margin-right:7px;vertical-align:middle"></span>${esc(p.n||p.u||"—")}${p.sa?' · ★':''}<div class="muted" style="font-size:12px;margin-left:15px">@${esc(p.u||"")}</div></td><td>${esc(roleLabel(p.r))}${p.sa?" · super admin":""}</td><td class="num muted">${ago}</td></tr>`;
+          const canKick = !p.sa && !(CURRENT&&p.id===CURRENT.id);
+          return `<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#2e9e6b;margin-right:7px;vertical-align:middle"></span>${esc(p.n||p.u||"—")}${p.sa?' · ★':''}<div class="muted" style="font-size:12px;margin-left:15px">@${esc(p.u||"")}</div></td><td>${esc(roleLabel(p.r))}${p.sa?" · super admin":""}</td><td class="num muted">${ago}</td><td class="num">${canKick?`<button class="btn sm" onclick="forceLogoutUser('${p.id}')">Log out</button>`:""}</td></tr>`;
         }).join("")}</tbody></table>`
       : `<div class="muted" style="padding:20px;text-align:center">No users online right now.</div>`;
   }catch(e){ body.innerHTML=`<div class="notice">Couldn't read presence: ${esc(e.message||String(e))}</div>`; }
@@ -5364,14 +5386,15 @@ function superUsersHTML(){
         <button class="btn sm" onclick="editUser('${u.id}')">Edit</button>
         <button class="btn sm" onclick="resetPass('${u.id}')">Password</button>
         ${u.twoFA&&!you?`<button class="btn sm" onclick="adminDisable2FA('${u.id}')">Reset 2FA</button>`:""}
+        ${(u.active&&!you)?`<button class="btn sm" onclick="forceLogoutUser('${u.id}')">Log out</button>`:""}
         <button class="btn sm ${u.active?"":"primary"}" onclick="toggleUser('${u.id}')">${u.active?"Disable":"Enable"}</button>
         <button class="btn sm ${u.superadmin?"":""}" onclick="toggleSuperAdmin('${u.id}')">${u.superadmin?"Remove super":"Make super"}</button>
         <button class="btn sm danger" onclick="delUser('${u.id}')">Delete</button>
       </td></tr>`;
   }).join("");
-  return `<div class="notice">Full user control. <b>Make super</b> grants another account access to this hidden Super Admin panel. Only an administrator account can be made super.</div>
+  return `<div class="notice">Full user control. <b>Log out</b> signs a user out on all their devices (they can log back in); <b>Disable</b> blocks the account. <b>Make super</b> grants access to this hidden Super Admin panel (admins only).</div>
     <div class="panel"><div class="panel-head"><h3>All accounts</h3><div class="meta">${DB.users.length} account${DB.users.length===1?"":"s"}</div>
-      <div class="actions"><button class="btn sm primary" onclick="editUser()">+ New user</button></div></div>
+      <div class="actions"><button class="btn sm" onclick="forceLogoutAll()">⎋ Sign out all users</button> <button class="btn sm primary" onclick="editUser()">+ New user</button></div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
         <thead><tr><th>User</th><th>Role</th><th>Status</th><th>2FA</th><th></th></tr></thead>
         <tbody>${rows}</tbody></table></div></div>`;
@@ -5819,6 +5842,7 @@ function renderUserChrome(){
 }
 function enterApp(){
   $("#authScreen").classList.remove("show");
+  LOGIN_TS=Date.now();   // this session's sign-in time, for admin "force logout" checks
   renderUserChrome(); buildNav(); go(ROUTE); renderRateStrip();
   subscribeFirebase(); startPresence();
   if(!PERSIST_OK){
