@@ -388,7 +388,10 @@ function subscribeFirebase(){
     const d=snap.data(); if(!d||!d.json) return;
     if(d.json===lastJSON) return;                                  // unchanged
     lastJSON=d.json;
-    try{ DB=JSON.parse(d.json); }catch(e){ return; }
+    let parsed; try{ parsed=JSON.parse(d.json); }catch(e){ return; }
+    const prevAct=(DB&&DB.activity)||[];
+    DB=parsed;
+    if(!Array.isArray(DB.activity)) DB.activity=prevAct;           // audit log lives in its own doc; keep local copy
     // keep the logged-in user object fresh so role/permission changes apply live
     if(CURRENT){
       const me=DB.users.find(u=>u.id===CURRENT.id);
@@ -499,7 +502,18 @@ async function storeGet(){
     const snap=await FB_DOC.get();                 // network/permission errors propagate
     if(snap.exists){
       const d=snap.data();
-      if(d&&d.json){ lastJSON=d.json; return JSON.parse(d.json); }   // corrupt JSON throws → caller won't overwrite
+      if(d&&d.json){
+        lastJSON=d.json;
+        const db=JSON.parse(d.json);               // corrupt JSON throws → caller won't overwrite
+        // the audit log lives in its own doc (keeps the 1 MB workspace small); non-critical,
+        // so absence or a read failure never blocks — we just fall back to what's embedded/empty
+        try{
+          const a=await firebase.firestore().collection("seam_erp").doc("activity").get();
+          if(a.exists){ const ad=a.data(); if(ad&&ad.json) db.activity=JSON.parse(ad.json); }
+        }catch(e){ console.warn("Activity log load skipped:", e); }
+        if(!Array.isArray(db.activity)) db.activity=[];
+        return db;
+      }
       throw new Error("Workspace document has no data — not treating as new, will not overwrite");
     }
     return null;                                    // document genuinely absent → brand-new workspace
@@ -524,12 +538,23 @@ async function autoBackup(db){
   }catch(e){ console.warn("Auto-backup skipped:", e); }
 }
 async function storeSet(db){
-  const s=JSON.stringify(db);
   if(FB_ON){
-    try{ await FB_DOC.set({json:s, updated:Date.now()}); lastJSON=s; PERSIST_OK=true; autoBackup(db); return; }
-    catch(e){ console.error("Firestore write failed:", e); }
+    try{
+      // keep the large, non-critical audit log in its OWN document so it never
+      // counts against the 1 MB workspace limit
+      const act = (db && db.activity) || [];
+      const core = Object.assign({}, db); delete core.activity;
+      const s = JSON.stringify(core);
+      await FB_DOC.set({json:s, updated:Date.now()});
+      lastJSON=s; PERSIST_OK=true;
+      firebase.firestore().collection("seam_erp").doc("activity")
+        .set({json:JSON.stringify(act), updated:Date.now()})
+        .catch(e=>console.warn("Activity log save skipped:", e));
+      autoBackup(db);                       // backups keep the FULL db (incl. activity)
+      return;
+    }catch(e){ console.error("Firestore write failed:", e); }
   }
-  const ok=await rawSet(DB_KEY, s); if(!ok) MEM=db;
+  const ok=await rawSet(DB_KEY, JSON.stringify(db)); if(!ok) MEM=db;
 }
 async function sessionGet(){ const v=await rawGet(SESSION_KEY); if(v!=null){ try{ return JSON.parse(v); }catch(e){} } return MEM_SESSION; }
 async function sessionSet(v){ const ok=await rawSet(SESSION_KEY, JSON.stringify(v)); if(!ok) MEM_SESSION=v; }
