@@ -735,7 +735,7 @@ function shipLineUnit(l,po){ return (l && l.ddp!=null && l.ddp!=="") ? Number(l.
 function shipValueBy(s){ const by={}; shipPoLines(s).forEach(l=>{ const po=poByNumber(l.poId); const c=po?(po.currency||"USD"):"USD"; by[c]=(by[c]||0)+Number(l.qty||0)*shipLineUnit(l,po); }); return by; }
 function shipValueText(s){ const by=shipValueBy(s); const cs=Object.keys(by); return cs.length?cs.map(c=>money(by[c],c)).join(" + "):"—"; }
 function shipValueForPo(s,poId){ const po=poByNumber(poId); const l=shipPoLines(s).find(x=>x.poId===poId); return l?Number(l.qty||0)*shipLineUnit(l,po):0; }
-function shipDdpText(s){ const pls=shipPoLines(s); return pls.map(l=>{ const po=poByNumber(l.poId); return (l.ddp!=null&&l.ddp!=="")?money(Number(l.ddp),po?po.currency:"USD"):"—"; }).join("<br>"); }
+function shipDdpText(s){ const pls=shipPoLines(s); return pls.map(l=>{ const po=poByNumber(l.poId); const u=shipLineUnit(l,po); return u>0?money(u,po?po.currency:"USD"):"—"; }).join("<br>"); }
 
 /* ============================================================
    SEED DATA  (tells the full workflow story)
@@ -2604,13 +2604,14 @@ function editShip(id,presetPo){
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
   const aSearch=$("#sh_search"), aSel=$("#sh_po"), aQty=$("#sh_qty"), aDdp=$("#sh_ddp");
   function allocTotal(){ return ALLOC.reduce((a,x)=>a+Number(x.qty||0),0); }
-  function allocValueBy(){ const by={}; ALLOC.forEach(x=>{ const c=curOf(x.poId); by[c]=(by[c]||0)+Number(x.qty||0)*Number(x.ddp||0); }); return by; }
+  const allocUnit = x => { if(x.ddp!==""&&x.ddp!=null) return Number(x.ddp); const po=poByNumber(x.poId); return po?poAvgPrice(po):0; };  // effective DDP = entered, else PO unit price
+  function allocValueBy(){ const by={}; ALLOC.forEach(x=>{ const c=curOf(x.poId); by[c]=(by[c]||0)+Number(x.qty||0)*allocUnit(x); }); return by; }
   function renderAlloc(){
     const list=$("#sh_list");
-    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>{ const c=curOf(x.poId); const val=Number(x.qty||0)*Number(x.ddp||0);
-      return `<div class="stat-line" style="padding:5px 0"><span>${esc(x.label)} — <b>${num(x.qty)}</b> pcs${x.ddp?` × <b>${money(x.ddp,c)}</b> = <b>${money(val,c)}</b>`:` <span class="muted" style="font-size:11px">(no DDP price)</span>`}</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`;
+    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>{ const c=curOf(x.poId); const u=allocUnit(x); const val=Number(x.qty||0)*u;
+      return `<div class="stat-line" style="padding:5px 0"><span>${esc(x.label)} — <b>${num(x.qty)}</b> pcs${u?` × <b>${money(u,c)}</b> = <b>${money(val,c)}</b>`:` <span class="muted" style="font-size:11px">(no price)</span>`}</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`;
     }).join("")
-      : `<div class="muted" style="font-size:12px;padding:4px 0">No POs added yet — pick a PO, qty + DDP price, and “Add PO”.</div>`;
+      : `<div class="muted" style="font-size:12px;padding:4px 0">No POs added yet — pick a PO + qty and “Add PO” (DDP price fills from the PO).</div>`;
     const vb=allocValueBy(); const vt=Object.keys(vb).filter(c=>vb[c]>0).map(c=>money(vb[c],c)).join(" + ");
     $("#sh_total").textContent=num(allocTotal())+" pcs"+(vt?" · "+vt:"");
     list.querySelectorAll("[data-ai]").forEach(b=> b.onclick=()=>{ ALLOC.splice(Number(b.dataset.ai),1); renderAlloc(); });
@@ -2621,7 +2622,7 @@ function editShip(id,presetPo){
     aSel.size=q&&matches.length?Math.min(8,matches.length+1):1;
   };
   aSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(aSel.options).filter(o=>o.value); if(opts.length===1){ aSel.value=opts[0].value; aSel.size=1; aSel.dispatchEvent(new Event("change")); } } };
-  aSel.addEventListener("change",()=>{ aSel.size=1; const po=poByNumber(aSel.value); if(po && !aDdp.value){ const p=poAvgPrice(po); if(p>0) aDdp.value=p; } });
+  aSel.addEventListener("change",()=>{ aSel.size=1; const po=poByNumber(aSel.value); if(po){ const p=poAvgPrice(po); aDdp.value=p>0?p:""; } });  // DDP price defaults to the PO's unit price
   $("#sh_add").onclick=()=>{
     const pid=aSel.value, qv=Number(aQty.value||0), dv=Number(aDdp.value||0);
     if(!pid){ toast("Pick a PO to add","warn"); return; }
