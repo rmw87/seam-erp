@@ -2310,16 +2310,24 @@ VIEWS.guides=function(){
 };
 
 /* ---------- RAW MATERIAL & IMPORT ---------- */
-let MAT_SEARCH="";
+let MAT_SEARCH="", MAT_SUP="All";
 VIEWS.materials=function(){
   setHead("Procurement","Materials Planning",
     `${canExport()?`<button class="btn" onclick="exportMaterials()">⬆ Export Excel</button> `:""}<button class="btn primary" onclick="editMaterial()">+ Order material</button>`);
   const tabs=["All"].concat(MAT_STATUS).concat(["From Stock"]);
   const mq=(MAT_SEARCH||"").trim().toLowerCase();
+  // suppliers that appear on purchase lines, for the supplier filter
+  const supIds=Array.from(new Set(DB.bom.filter(m=>m.source!=="stock"&&m.supplierId).map(m=>m.supplierId)));
+  if(MAT_SUP!=="All" && !supIds.includes(MAT_SUP)) MAT_SUP="All";
+  const supOptions=supIds.map(id=>({id,name:supplierName(id)})).sort((a,b)=>a.name.localeCompare(b.name));
   let rows = DB.bom.map(m=>({...m, po:poByNumber(m.poId)}));
   if(FILTERS.mat==="From Stock") rows=rows.filter(m=>m.source==="stock");
   else if(FILTERS.mat!=="All") rows=rows.filter(m=>m.status===FILTERS.mat);
+  if(MAT_SUP!=="All") rows=rows.filter(m=>m.source!=="stock" && m.supplierId===MAT_SUP);
   if(mq) rows=rows.filter(m=>((m.material||"")+" "+(m.color||"")+" "+(m.type||"")+" "+(m.po?m.po.poNumber:"")+" "+(m.po?m.po.style:"")+" "+supplierName(m.supplierId)).toLowerCase().includes(mq));
+  // totals across the filtered set
+  const fQty = rows.reduce((a,m)=>a+Number(m.totalQty||0),0);
+  const fCost = rows.reduce((a,m)=>a+Number(m.totalQty||0)*Number(m.unitCost||0),0);
   const totCost = DB.bom.reduce((a,m)=>a+Number(m.totalQty||0)*Number(m.unitCost||0),0);
   const received = DB.bom.filter(m=>m.status==="Received"||m.source==="stock").length;
   const fromStockCount = DB.bom.filter(m=>m.source==="stock").length;
@@ -2339,7 +2347,11 @@ VIEWS.materials=function(){
       <td>${statusCell}</td>
       <td class="num"><button class="btn sm" onclick="editMaterial('${m.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delMaterial('${m.id}')">Del</button>`:""}</td></tr>`;}).join("")
-    : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No material lines${mq?" match this search":FILTERS.mat!=="All"?" in “"+esc(FILTERS.mat)+"”":""}.</td></tr>`;
+    : `<tr><td colspan="8" class="muted" style="text-align:center;padding:30px">No material lines${mq?" match this search":MAT_SUP!=="All"?" for "+esc(supplierName(MAT_SUP)):FILTERS.mat!=="All"?" in “"+esc(FILTERS.mat)+"”":""}.</td></tr>`;
+  const tfoot=rows.length?`<tfoot><tr style="border-top:2px solid var(--line);font-weight:700">
+      <td>Total${MAT_SUP!=="All"?" · "+esc(supplierName(MAT_SUP)):""}</td><td></td>
+      <td class="num">${num(fQty)}</td><td></td>
+      <td class="num" style="color:var(--chalk)">${money(fCost)}</td><td colspan="3"></td></tr></tfoot>`:"";
 
   $("#view").innerHTML=`
     <div class="kpis">
@@ -2351,13 +2363,15 @@ VIEWS.materials=function(){
     <div class="notice">Order one material against <b>several POs at once</b> (e.g. labels or hangers) — “+ Order material” lets you split the qty across POs and add a <b>General stock</b> bucket for extra, PO-free stock. All lines share one order number (OMN) and are received together. <b>Purchase</b> lines run <b>Required → Ordered → In Transit → Received</b>; a <b>From existing stock</b> line draws from inventory. Costs in US$ or Rs — Rs converts to US$ with the exchange rate.</div>
     <div class="toolbar">
       <div class="search"><span class="ico">⌕</span><input id="matq" placeholder="Search material, PO, colour, supplier…" value="${esc(MAT_SEARCH)}"></div>
+      <select id="matSup" style="max-width:210px"><option value="All">All suppliers</option>${supOptions.map(s=>`<option value="${s.id}" ${MAT_SUP===s.id?"selected":""}>${esc(s.name)}</option>`).join("")}</select>
       <div class="filterpills" style="margin-left:auto">${tabs.map(t=>`<div class="fp ${FILTERS.mat===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div>
     </div>
-    <div class="panel"><div class="panel-head"><h3>Materials</h3><div class="meta">${rows.length} line${rows.length===1?"":"s"}${FILTERS.mat!=="All"?" · "+esc(FILTERS.mat):""}</div></div>
+    <div class="panel"><div class="panel-head"><h3>Materials</h3><div class="meta">${rows.length} line${rows.length===1?"":"s"} · ${num(fQty)} qty · ${money(fCost)}${MAT_SUP!=="All"?" · "+esc(supplierName(MAT_SUP)):""}${FILTERS.mat!=="All"?" · "+esc(FILTERS.mat):""}</div></div>
       <div class="panel-body" style="overflow-x:auto"><table>
       <thead><tr><th>Material</th><th>PO</th><th class="num">Required</th><th>Supplier</th><th class="num">Est. cost</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
-      <tbody>${body}</tbody></table></div></div>`;
+      <tbody>${body}</tbody>${tfoot}</table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.mat=f.dataset.f; VIEWS.materials(); });
+  const msu=$("#matSup"); if(msu) msu.onchange=e=>{ MAT_SUP=e.target.value; VIEWS.materials(); };
   const mqe=$("#matq"); if(mqe) mqe.oninput=e=>{ MAT_SEARCH=e.target.value; const v=e.target.value; VIEWS.materials(); const n=$("#matq"); if(n){ n.focus(); n.selectionStart=n.selectionEnd=v.length; } };
 };
 function delMaterial(id){
