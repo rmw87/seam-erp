@@ -730,10 +730,12 @@ function shipCoversPo(s,poId){ return shipPoLines(s).some(l=>l.poId===poId); }
 function shipQtyForPo(s,poId){ return shipPoLines(s).filter(l=>l.poId===poId).reduce((a,l)=>a+Number(l.qty||0),0); }
 function shipmentsFor(poId){ return DB.shipments.filter(s=>shipCoversPo(s,poId)); }
 function shippedQty(poId){ return DB.shipments.reduce((a,s)=>a+shipQtyForPo(s,poId),0); }
-/* value of a shipment = Σ (line qty × that PO's avg unit price), grouped by currency */
-function shipValueBy(s){ const by={}; shipPoLines(s).forEach(l=>{ const po=poByNumber(l.poId); if(!po) return; const c=po.currency||"USD"; by[c]=(by[c]||0)+Number(l.qty||0)*poAvgPrice(po); }); return by; }
+/* value of a shipment = Σ (line qty × DDP price), grouped by currency; falls back to the PO price if no DDP entered */
+function shipLineUnit(l,po){ return (l && l.ddp!=null && l.ddp!=="") ? Number(l.ddp) : (po?poAvgPrice(po):0); }
+function shipValueBy(s){ const by={}; shipPoLines(s).forEach(l=>{ const po=poByNumber(l.poId); const c=po?(po.currency||"USD"):"USD"; by[c]=(by[c]||0)+Number(l.qty||0)*shipLineUnit(l,po); }); return by; }
 function shipValueText(s){ const by=shipValueBy(s); const cs=Object.keys(by); return cs.length?cs.map(c=>money(by[c],c)).join(" + "):"—"; }
-function shipValueForPo(s,poId){ const po=poByNumber(poId); return po?shipQtyForPo(s,poId)*poAvgPrice(po):0; }
+function shipValueForPo(s,poId){ const po=poByNumber(poId); const l=shipPoLines(s).find(x=>x.poId===poId); return l?Number(l.qty||0)*shipLineUnit(l,po):0; }
+function shipDdpText(s){ const pls=shipPoLines(s); return pls.map(l=>{ const po=poByNumber(l.poId); return (l.ddp!=null&&l.ddp!=="")?money(Number(l.ddp),po?po.currency:"USD"):"—"; }).join("<br>"); }
 
 /* ============================================================
    SEED DATA  (tells the full workflow story)
@@ -2524,6 +2526,7 @@ VIEWS.export=function(){
       <td class="mono">${esc(s.invoiceNo||"—")}</td>
       <td>${poCell||"—"}<div class="muted" style="font-size:12px">${esc(buyers.join(", ")||buyerName(s.buyerId))}</div></td>
       <td class="num">${num(s.qty)}</td>
+      <td class="num">${shipDdpText(s)}</td>
       <td class="num strong" style="color:var(--chalk)">${shipValueText(s)}</td>
       <td>${esc(s.mode)}<div class="muted" style="font-size:12px">${esc(s.portLoad||"")} → ${esc(s.portDischarge||"")}</div></td>
       <td class="num">${fmtDate(s.shipDate)}</td>
@@ -2534,20 +2537,20 @@ VIEWS.export=function(){
         </select></td>
       <td class="num"><button class="btn sm" onclick="editShip('${s.id}')">Edit</button>
         ${canDelete()?`<button class="btn sm danger" onclick="delShip('${s.id}')">Delete</button>`:""}</td></tr>`;
-  }).join(""):`<tr><td colspan="9" class="muted" style="text-align:center;padding:30px">No shipments in this status.</td></tr>`;
+  }).join(""):`<tr><td colspan="10" class="muted" style="text-align:center;padding:30px">No shipments in this status.</td></tr>`;
 
   $("#view").innerHTML=`
     <div class="kpis">
       <div class="kpi"><div class="klab">Shipments</div><div class="kval">${DB.shipments.length}</div><div class="ksub">booked to date</div></div>
       <div class="kpi k-thread"><div class="klab">In transit</div><div class="kval">${inTransit}</div><div class="ksub">on the water / in the air</div></div>
       <div class="kpi k-chalk"><div class="klab">Units exported</div><div class="kval">${num(totalUnits)}</div><div class="ksub">total pieces shipped</div></div>
-      <div class="kpi k-green"><div class="klab">Export value</div><div class="kval" style="font-size:20px">${valText}</div><div class="ksub">all shipments · at PO prices</div></div>
+      <div class="kpi k-green"><div class="klab">Export value</div><div class="kval" style="font-size:20px">${valText}</div><div class="ksub">all shipments · at DDP price</div></div>
       <div class="kpi"><div class="klab">Ready to ship</div><div class="kval">${ready.length}</div><div class="ksub">orders awaiting export</div></div>
     </div>
     ${readyBanner}
     <div class="toolbar"><div class="filterpills">${tabs.map(t=>`<div class="fp ${FILTERS.ship===t?"on":""}" data-f="${esc(t)}">${esc(t)}</div>`).join("")}</div></div>
     <div class="panel"><div class="panel-body"><table>
-      <thead><tr><th>Invoice</th><th>PO / Buyer</th><th class="num">Qty</th><th class="num">Value</th><th>Mode / Route</th><th class="num">Shipped</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Invoice</th><th>PO / Buyer</th><th class="num">Qty</th><th class="num">DDP price</th><th class="num">Value</th><th>Mode / Route</th><th class="num">Shipped</th><th class="num">ETA</th><th>Status</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div></div>`;
   $$(".fp").forEach(f=> f.onclick=()=>{ FILTERS.ship=f.dataset.f; VIEWS.export(); });
 };
@@ -2555,8 +2558,9 @@ function editShip(id,presetPo){
   const s = id?DB.shipments.find(x=>x.id===id):null;
   const rec = s || {mode:"Sea",status:"Booked",shipDate:today()};
   // existing lines → the allocation list; legacy single-PO shipment becomes one line
-  let ALLOC = s ? shipPoLines(s).map(l=>{ const po=poByNumber(l.poId); return {poId:l.poId, label:po?po.poNumber+" · "+po.garment:l.poId, qty:Number(l.qty||0)}; })
-                : (presetPo ? (()=>{ const po=poByNumber(presetPo); return po?[{poId:presetPo,label:po.poNumber+" · "+po.garment,qty:""}]:[]; })() : []);
+  let ALLOC = s ? shipPoLines(s).map(l=>{ const po=poByNumber(l.poId); return {poId:l.poId, label:po?po.poNumber+" · "+po.garment:l.poId, qty:Number(l.qty||0), ddp:(l.ddp!=null&&l.ddp!=="")?Number(l.ddp):(po?poAvgPrice(po):"")}; })
+                : (presetPo ? (()=>{ const po=poByNumber(presetPo); return po?[{poId:presetPo,label:po.poNumber+" · "+po.garment,qty:"",ddp:poAvgPrice(po)||""}]:[]; })() : []);
+  const curOf = pid => { const po=poByNumber(pid); return po?(po.currency||"USD"):"USD"; };
   const poOptions = DB.pos.map(p=>`<option value="${p.id}">${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
   const field=(lab,inner)=>`<label class="fld"><span class="lab">${lab}</span>${inner}</label>`;
   $("#modal").className="modal wide";
@@ -2570,12 +2574,13 @@ function editShip(id,presetPo){
             <input id="sh_search" placeholder="🔍 Search PO / style…" autocomplete="off" style="margin-bottom:6px">
             <select id="sh_po"><option value="">— select PO —</option>${poOptions}</select>
           </div>
-          <input id="sh_qty" type="number" min="0" placeholder="qty (pcs)" style="flex:1;min-width:90px">
+          <input id="sh_qty" type="number" min="0" placeholder="qty (pcs)" style="flex:1;min-width:80px">
+          <input id="sh_ddp" type="number" min="0" step="0.0001" placeholder="DDP price /pc" style="flex:1;min-width:90px">
           <button type="button" class="btn sm primary" id="sh_add">+ Add PO</button>
         </div>
       </label>
       <div id="sh_list" style="margin-top:2px"></div>
-      <div class="stat-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span class="muted" style="font-size:12.5px">Total quantity</span><span class="strong" id="sh_total">0 pcs</span></div>
+      <div class="stat-line" style="border-top:1px solid var(--line);margin-top:4px;padding-top:8px"><span class="muted" style="font-size:12.5px">Total quantity · value</span><span class="strong" id="sh_total">0 pcs</span></div>
       <div class="row2">
         ${field("Mode",`<select id="sh_mode">${SHIP_MODE.map(m=>`<option ${rec.mode===m?"selected":""}>${m}</option>`).join("")}</select>`)}
         ${field("Status",`<select id="sh_status">${SHIP_STATUS.map(x=>`<option ${rec.status===x?"selected":""}>${x}</option>`).join("")}</select>`)}
@@ -2597,13 +2602,17 @@ function editShip(id,presetPo){
       <button class="btn primary" id="sh_save">${id?"Save shipment":"Book shipment"}</button></div>`;
   $("#scrim").classList.add("open");
   $("#mx").onclick=closeModal; $("#mcancel").onclick=closeModal;
-  const aSearch=$("#sh_search"), aSel=$("#sh_po"), aQty=$("#sh_qty");
+  const aSearch=$("#sh_search"), aSel=$("#sh_po"), aQty=$("#sh_qty"), aDdp=$("#sh_ddp");
   function allocTotal(){ return ALLOC.reduce((a,x)=>a+Number(x.qty||0),0); }
+  function allocValueBy(){ const by={}; ALLOC.forEach(x=>{ const c=curOf(x.poId); by[c]=(by[c]||0)+Number(x.qty||0)*Number(x.ddp||0); }); return by; }
   function renderAlloc(){
     const list=$("#sh_list");
-    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>`<div class="stat-line" style="padding:5px 0"><span>${esc(x.label)} — <b>${num(x.qty)}</b> pcs</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`).join("")
-      : `<div class="muted" style="font-size:12px;padding:4px 0">No POs added yet — pick a PO + qty and “Add PO”.</div>`;
-    $("#sh_total").textContent=num(allocTotal())+" pcs";
+    list.innerHTML = ALLOC.length ? ALLOC.map((x,i)=>{ const c=curOf(x.poId); const val=Number(x.qty||0)*Number(x.ddp||0);
+      return `<div class="stat-line" style="padding:5px 0"><span>${esc(x.label)} — <b>${num(x.qty)}</b> pcs${x.ddp?` × <b>${money(x.ddp,c)}</b> = <b>${money(val,c)}</b>`:` <span class="muted" style="font-size:11px">(no DDP price)</span>`}</span><button type="button" class="btn sm danger" data-ai="${i}" style="padding:3px 9px">×</button></div>`;
+    }).join("")
+      : `<div class="muted" style="font-size:12px;padding:4px 0">No POs added yet — pick a PO, qty + DDP price, and “Add PO”.</div>`;
+    const vb=allocValueBy(); const vt=Object.keys(vb).filter(c=>vb[c]>0).map(c=>money(vb[c],c)).join(" + ");
+    $("#sh_total").textContent=num(allocTotal())+" pcs"+(vt?" · "+vt:"");
     list.querySelectorAll("[data-ai]").forEach(b=> b.onclick=()=>{ ALLOC.splice(Number(b.dataset.ai),1); renderAlloc(); });
   }
   aSearch.oninput=()=>{ const q=aSearch.value.trim().toLowerCase(); const cur=aSel.value;
@@ -2611,21 +2620,21 @@ function editShip(id,presetPo){
     aSel.innerHTML=`<option value="">— select PO —</option>`+matches.map(p=>`<option value="${p.id}" ${p.id===cur?"selected":""}>${esc(p.poNumber+" · "+p.garment)}</option>`).join("");
     aSel.size=q&&matches.length?Math.min(8,matches.length+1):1;
   };
-  aSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(aSel.options).filter(o=>o.value); if(opts.length===1){ aSel.value=opts[0].value; aSel.size=1; } } };
-  aSel.addEventListener("change",()=>{ aSel.size=1; });
+  aSearch.onkeydown=ev=>{ if(ev.key==="Enter"){ ev.preventDefault(); const opts=Array.from(aSel.options).filter(o=>o.value); if(opts.length===1){ aSel.value=opts[0].value; aSel.size=1; aSel.dispatchEvent(new Event("change")); } } };
+  aSel.addEventListener("change",()=>{ aSel.size=1; const po=poByNumber(aSel.value); if(po && !aDdp.value){ const p=poAvgPrice(po); if(p>0) aDdp.value=p; } });
   $("#sh_add").onclick=()=>{
-    const pid=aSel.value, qv=Number(aQty.value||0);
+    const pid=aSel.value, qv=Number(aQty.value||0), dv=Number(aDdp.value||0);
     if(!pid){ toast("Pick a PO to add","warn"); return; }
     if(qv<=0){ toast("Enter the qty for this PO","warn"); return; }
     if(ALLOC.some(x=>x.poId===pid)){ toast("That PO is already in the shipment — remove it to change the qty","warn"); return; }
     const po=poByNumber(pid);
-    ALLOC.push({poId:pid, label:(po?po.poNumber+" · "+po.garment:pid), qty:qv});
-    aQty.value=""; aSearch.value=""; aSel.innerHTML=`<option value="">— select PO —</option>`+poOptions; aSel.size=1; renderAlloc();
+    ALLOC.push({poId:pid, label:(po?po.poNumber+" · "+po.garment:pid), qty:qv, ddp:dv||""});
+    aQty.value=""; aDdp.value=""; aSearch.value=""; aSel.innerHTML=`<option value="">— select PO —</option>`+poOptions; aSel.size=1; renderAlloc();
   };
   renderAlloc();
   $("#sh_save").onclick=async()=>{
     if(!ALLOC.length){ toast("Add at least one PO to the shipment","warn"); return; }
-    const lines=ALLOC.map(a=>({poId:a.poId, qty:Number(a.qty||0)}));
+    const lines=ALLOC.map(a=>({poId:a.poId, qty:Number(a.qty||0), ddp:(a.ddp!==""&&a.ddp!=null)?Number(a.ddp):""}));
     const total=lines.reduce((a,l)=>a+l.qty,0);
     const firstPo=poByNumber(lines[0].poId);
     const d={ poId:lines[0].poId, buyerId:firstPo?firstPo.buyerId:"", qty:total, lines,
